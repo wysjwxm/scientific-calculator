@@ -1,30 +1,34 @@
-# 科学计算器后端服务 实现计划
+# 科学计算器后端服务 实现计划（DDD 版）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 实现一套纯内存、零外部依赖的科学计算器 HTTP 后端服务，打包为 `java -jar` 可直接启动的 runnable jar。
+**Goal:** 用 DDD 四层架构实现一套纯内存、零外部依赖的科学计算器 HTTP 后端服务，打包为 `java -jar` 可直接启动的 runnable jar。
 
-**Architecture:** 四层单向依赖——`api → service → store`、`service → core`、`core → 无`。`core` 是零 Spring 依赖的纯计算内核（数值模型 → 词法 → 优先级爬升解析 → AST → 求值），因此可被最纯粹地单测。存储层为「接口 + InMemory 实现」，为未来替换持久化留出真实可行的接缝。
+**Architecture:** DDD 四层单向依赖 —— `interfaces → application → domain ← infrastructure`。`domain` 承载全部业务规则且零框架依赖（不 import `org.springframework.*`），因此可被最纯粹地单测；`interfaces` 同时承担防腐层职责（JSON ↔ 领域对象）；聚合根在领域层声明接口、在基础设施层提供内存实现。关键不变量（变量名不得为保留名）由值对象 `VariableName` 的构造器保证，而非由调用纪律保证。
 
 **Tech Stack:** Java 17、Spring Boot 3.5.x、Maven、JUnit 5（由 `spring-boot-starter-test` 提供）、Jackson（由 `spring-boot-starter-web` 传递引入）
 
-**Spec:** `docs/superpowers/specs/2026-09-12-scientific-calculator-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-12-scientific-calculator-design.md`（v3）
 
 ## Global Constraints
 
 以下为 spec 的项目级要求，**每个任务都隐含包含本节**：
 
-- Java 版本：**17**（`<java.version>17</java.version>`）；可使用 record、sealed interface、switch 模式匹配
+- Java 版本：**17**；可使用 record、sealed interface、switch 模式匹配
 - Spring Boot parent：**3.5.x**（原脚手架 4.1.1 必须降级，见 spec §12 D9）
 - **新增依赖只允许一个**：`spring-boot-starter-web`。**不得**引入 Lombok、Guava、Commons、actuator、validation starter 或任何其他第三方库
 - **零外部调用**：不发起任何对外网络请求，不接入任何外部服务、数据库、缓存
-- **`core` 包禁止 import 任何 `org.springframework.*`**
+- **`domain` 包禁止 import 任何 `org.springframework.*`**，也禁止 import `application` / `infrastructure` / `interfaces`
+- **禁止反向依赖**：`application` 不 import `infrastructure` 与 `interfaces`；`infrastructure` 不 import `application` 与 `interfaces`
+- 所有 Spring Bean 的装配集中在 `infrastructure/config/CalculatorConfiguration`（领域类不能加注解，装配点保持唯一）
 - HTTP 前缀：`/api/v1`
 - 包根：`com.wysjwxm.calculator`
 - 错误码取值（12 个，不可增删改名）：`PARSE_ERROR` `INVALID_REQUEST` `UNKNOWN_FUNCTION` `VARIABLE_NOT_FOUND` `HISTORY_NOT_FOUND` `NO_HANDLER` `METHOD_NOT_ALLOWED` `UNKNOWN_VARIABLE` `DIVISION_BY_ZERO` `DOMAIN_ERROR` `NON_FINITE_RESULT` `INTERNAL_ERROR`
 - 算子优先级（**唯一事实来源是 `OperatorTable`**）：`+ -` = 1、`* / %` = 2、一元 `+ -` = 3、`^` = 4、`!` = 5；`^` 右结合，其余左结合
 - 保留常量：`pi` = `3.141592653589793`、`e` = `2.718281828459045`
-- 变量名禁用集合 = **函数名 ∪ 保留常量名**，在存储写入与请求级临时变量**两个入口统一生效**
+- **函数取名方法名为 `functionName()`，不能叫 `name()`**（枚举无法覆写 `Enum.name()`，见 spec §4.3）
+- **`ExpressionParser` 必须无状态**（游标封在每次调用的局部对象里，见 spec §4.3）
+- 变量名禁用集合 = **函数名 ∪ 保留常量名**，由 `VariableName` 构造器统一拒绝
 - 一元函数 23 个：`sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh sqrt cbrt abs exp ln log10 log2 floor ceil round sign`
 - 二元函数 5 个：`hypot max min atan2 log`
 - 不提供 `pow`/`mod` 函数（用 `^`/`%` 运算符），不提供 `fact` 函数（用 `!` 后缀）
@@ -37,122 +41,112 @@
 ```
 src/main/java/com/wysjwxm/calculator/
 ├── ScientificCalculatorApplication.java      [已存在，不改]
-├── core/                                      ← 零 Spring 依赖
-│   ├── AngleUnit.java                         DEGREE / RADIAN 枚举
-│   ├── Constants.java                         pi / e 保留常量
+├── domain/                                    ← 零框架依赖
+│   ├── AngleUnit.java
+│   ├── MathematicalConstant.java
 │   ├── error/
-│   │   ├── CalcErrorCode.java                 12 个错误码枚举（不含 HTTP 状态）
-│   │   └── CalcException.java                 业务异常基类，携带 code + position
-│   ├── number/
-│   │   ├── CalcNumber.java                    sealed interface
-│   │   ├── DecimalNumber.java
-│   │   ├── FloatingNumber.java
-│   │   └── Numbers.java                       算术 + 类型提升（实例类，持有 MathContext）
-│   ├── lexer/
-│   │   ├── TokenType.java
-│   │   ├── Token.java
-│   │   └── Lexer.java
-│   ├── operator/
-│   │   ├── Fixity.java                        INFIX / PREFIX / POSTFIX
-│   │   ├── Associativity.java                 LEFT / RIGHT
-│   │   ├── Operator.java
-│   │   └── OperatorTable.java                 优先级唯一事实来源
-│   ├── parser/
-│   │   ├── ExpressionParser.java              优先级爬升
-│   │   ├── ExpressionPrinter.java             AST → 中缀文本（供测试断言）
-│   │   └── ast/
-│   │       ├── Expression.java                sealed interface
-│   │       ├── LiteralExpr.java
-│   │       ├── VariableExpr.java
-│   │       ├── UnaryExpr.java
-│   │       ├── PostfixExpr.java
-│   │       ├── BinaryExpr.java
-│   │       └── CallExpr.java
-│   ├── function/
-│   │   ├── MathFunction.java                  接口：name / arity / angleSensitive
-│   │   ├── UnaryFunction.java                 23 个一元函数枚举
-│   │   ├── BinaryFunction.java                5 个二元函数枚举
-│   │   └── FunctionRegistry.java              名字 → 实现，含禁用名集合
-│   └── eval/
-│       ├── EvaluationContext.java             变量查找接口
-│       └── Evaluator.java                     AST → CalcNumber
-├── store/
-│   ├── VariableRecord.java
-│   ├── HistoryRecord.java
-│   ├── PageResult.java
-│   ├── VariableStore.java                     接口
-│   ├── CalculationHistoryStore.java           接口
-│   ├── InMemoryVariableStore.java
-│   └── InMemoryCalculationHistoryStore.java
-├── service/
-│   ├── VariableService.java                   含保留名校验（其他组件复用它）
-│   ├── HistoryService.java
-│   └── CalculationService.java
-├── api/
-│   ├── CalculatorController.java
-│   ├── HistoryController.java
-│   ├── VariableController.java
-│   ├── MetaController.java
-│   ├── dto/
-│   │   ├── CalculateRequest.java
-│   │   ├── CalculateResponse.java
-│   │   ├── FunctionsResponse.java
-│   │   ├── HistoryItemResponse.java
-│   │   ├── HistoryPageResponse.java
-│   │   ├── VariableResponse.java
-│   │   ├── VariableListResponse.java
-│   │   ├── PutVariableRequest.java
-│   │   ├── ClearHistoryResponse.java
-│   │   ├── HealthResponse.java
-│   │   └── CalcNumberSerializer.java
-│   └── error/
-│       ├── ErrorResponse.java
-│       ├── ErrorStatusMapper.java             CalcErrorCode → HttpStatus
-│       └── GlobalExceptionHandler.java
-└── config/
-    └── CalculatorProperties.java
+│   │   ├── CalcErrorCode.java                 12 个错误码（不含 HTTP 状态）
+│   │   └── CalcException.java                 领域异常，携带 code + position
+│   └── model/
+│       ├── number/
+│       │   ├── CalcNumber.java                sealed interface
+│       │   ├── DecimalNumber.java
+│       │   ├── FloatingNumber.java
+│       │   └── Numbers.java                   领域服务（算术与类型提升）
+│       ├── expression/
+│       │   ├── ExpressionText.java            值对象：原文，构造即校验
+│       │   ├── Expression.java                sealed interface
+│       │   ├── LiteralExpr.java  VariableExpr.java  UnaryExpr.java
+│       │   ├── PostfixExpr.java  BinaryExpr.java    CallExpr.java
+│       │   ├── Fixity.java  Associativity.java  Operator.java
+│       │   ├── OperatorTable.java             优先级唯一事实来源
+│       │   ├── parse/
+│       │   │   ├── TokenType.java  Token.java  Lexer.java
+│       │   │   └── ExpressionParser.java      无状态，优先级爬升
+│       │   └── eval/
+│       │       ├── EvaluationContext.java
+│       │       ├── ExpressionEvaluator.java
+│       │       └── AstInspection.java
+│       ├── function/
+│       │   ├── MathFunction.java
+│       │   ├── UnaryFunction.java             23 个
+│       │   ├── BinaryFunction.java            5 个
+│       │   ├── AngleUnits.java                包内辅助
+│       │   ├── FunctionRegistry.java
+│       │   └── ReservedNames.java             值对象，standard() 静态可求
+│       ├── variable/
+│       │   ├── VariableName.java              **构造即校验，无旁路**
+│       │   ├── Variable.java                  实体
+│       │   └── VariableSet.java               聚合根接口
+│       └── calculation/
+│           ├── Calculation.java               实体
+│           ├── PageResult.java
+│           └── CalculationHistory.java        聚合根接口
+├── application/                               纯 Java，零框架注解
+│   ├── CalculationPolicy.java
+│   ├── CalculationCommand.java
+│   ├── CalculationUseCase.java
+│   ├── VariableUseCase.java
+│   └── HistoryUseCase.java
+├── infrastructure/
+│   ├── InMemoryVariableSet.java
+│   ├── InMemoryCalculationHistory.java
+│   └── config/
+│       ├── CalculatorProperties.java
+│       └── CalculatorConfiguration.java       全部 Bean 装配点
+└── interfaces/                                防腐层
+    ├── CalculatorController.java  HistoryController.java
+    ├── VariableController.java    MetaController.java
+    ├── dto/                       11 个 record + CalcNumberSerializer
+    └── error/                     ErrorResponse, ErrorStatusMapper,
+                                   GlobalExceptionHandler
 ```
 
-**依赖方向铁律**：`core` 不 import `store`、`service`、`api`、`config`、`org.springframework.*`。若某个任务发现 `core` 需要反向依赖，说明设计有问题，停下来报告。
+**依赖方向铁律**：若某个任务发现 `domain` 需要 import `application` / `infrastructure` / `interfaces` 或任何 `org.springframework.*`，说明设计有问题，**停下来报告**，不要为了让代码通过而加依赖。
+
+**测试辅助类**（放 test 源码，不进 main）：`ExpressionPrinter`（AST → 完全括号化中缀文本，供断言）。
 
 ---
 
 ## 任务总览
 
-| # | 任务 | 产出 |
-|---|---|---|
-| 1 | 构建基线 | pom 降级、Web 依赖、配置类 |
-| 2 | 错误类型词汇表 | `CalcErrorCode`、`CalcException` |
-| 3 | 数值模型 | `CalcNumber` 家族、`Numbers` |
-| 4 | 词法分析 | `Lexer` |
-| 5 | 算子表 | `OperatorTable` |
-| 6 | AST 与解析器 | `ExpressionParser` |
-| 7 | 变量与函数注册表 | `Constants`、`FunctionRegistry` |
-| 8 | 求值器 | `Evaluator` |
-| 9 | 变量存储 | `InMemoryVariableStore` |
-| 10 | 历史存储 | `InMemoryCalculationHistoryStore` |
-| 11 | 服务层 | 三个 Service（含保留名校验） |
-| 12 | 错误响应与全局异常处理 | `GlobalExceptionHandler` |
-| 13 | HTTP 接口 | 4 个 Controller + DTO |
-| 14 | 端到端测试 | 全链路验证 |
-| 15 | 交付文档与打包 | README、三份文档、runnable jar |
+| # | 任务 | 层 | 产出 |
+|---|---|---|---|
+| 1 | 构建基线 | — | pom 降级、Web 依赖、`AngleUnit`、`CalculatorProperties` |
+| 2 | 领域错误词汇表 | domain | `CalcErrorCode`、`CalcException` |
+| 3 | 数值值对象 | domain | `CalcNumber` 家族、`Numbers` |
+| 4 | 表达式原文 + 词法 | domain | `ExpressionText`、`Lexer` |
+| 5 | 算子值对象 | domain | `OperatorTable` |
+| 6 | AST 与解析器 | domain | `ExpressionParser`（无状态） |
+| 7 | 函数值对象与保留名 | domain | `FunctionRegistry`、`ReservedNames` |
+| 8 | 变量值对象（构造即校验） | domain | `VariableName`、`Variable` |
+| 9 | 求值器 | domain | `ExpressionEvaluator` |
+| 10 | 计算历史聚合根 | domain + infra | `CalculationHistory` + 内存实现 |
+| 11 | 变量聚合根 | domain + infra | `VariableSet` + 内存实现 |
+| 12 | 应用层用例与装配 | application + infra | 三个 UseCase、`CalculatorConfiguration` |
+| 13 | 接口层错误处理 | interfaces | `GlobalExceptionHandler`、`ErrorStatusMapper` |
+| 14 | 接口层 HTTP | interfaces | 4 个 Controller + DTO |
+| 15 | 端到端测试与打包 | 全链路 | runnable jar 验证 |
+| 16 | 交付文档 | — | README、三份文档 |
 
 ---
 
 ### Task 1: 构建基线
 
-把脚手架从 Spring Boot 4.1.1 降到 3.5.x，加入 Web 依赖，建立配置类。
+把脚手架从 Spring Boot 4.1.1 降到 3.5.x，加入 Web 依赖，建立角度制枚举与配置绑定。
 
 **Files:**
 - Modify: `pom.xml`
 - Modify: `src/main/resources/application.yaml`
-- Create: `src/main/java/com/wysjwxm/calculator/config/CalculatorProperties.java`
-- Test: `src/test/java/com/wysjwxm/calculator/config/CalculatorPropertiesTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/ScientificCalculatorApplicationTests.java`（已存在，验证仍通过）
+- Create: `src/main/java/com/wysjwxm/calculator/domain/AngleUnit.java`
+- Create: `src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorProperties.java`
+- Test: `src/test/java/com/wysjwxm/calculator/infrastructure/config/CalculatorPropertiesTest.java`
 
 **Interfaces:**
 - Consumes: 无（本任务是起点）
-- Produces: `CalculatorProperties`，含四个访问器 `defaultAngleUnit()` → `AngleUnit`、`historyCapacity()` → `int`、`maxExpressionLength()` → `int`、`divisionPrecision()` → `int`，注册为 Spring Bean。Task 8/11/13 会注入它。
+- Produces:
+  - `enum AngleUnit { DEGREE, RADIAN }`（`domain` 包）
+  - `record CalculatorProperties(AngleUnit defaultAngleUnit, int maxExpressionLength, int divisionPrecision, int historyCapacity)`，访问器同名；附加方法 `boolean historyUnbounded()`
 
 - [ ] **Step 1: 确认可用的 Spring Boot 3.5.x 版本**
 
@@ -167,7 +161,7 @@ curl -s "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-sta
 
 - [ ] **Step 2: 修改 pom.xml**
 
-把 `<parent>` 的 `<version>` 改为上一步确认的版本（如 `3.5.6`），并在 `<dependencies>` 中，把 `spring-boot-starter` 替换为 `spring-boot-starter-web`：
+把 `<parent>` 的 `<version>` 改为上一步确认的版本，并把 `spring-boot-starter` 替换为 `spring-boot-starter-web`：
 
 ```xml
     <parent>
@@ -195,11 +189,11 @@ curl -s "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-sta
 
 其余部分（`java.version`、`spring-boot-maven-plugin`）保持不变。**不要**添加任何其他依赖。
 
-- [ ] **Step 3: 验证依赖解析成功**
+- [ ] **Step 3: 验证依赖解析**
 
 运行：`mvn -q -DskipTests dependency:resolve`
 
-预期：BUILD SUCCESS。若报 `Could not resolve dependencies` 且原因是 `spring-boot-starter-parent:3.5.6` 不存在，回到 Step 1 换成真实版本。
+预期：BUILD SUCCESS。若报 `spring-boot-starter-parent:<版本>` 不存在，回到 Step 1 换成真实版本。
 
 - [ ] **Step 4: 修改 application.yaml**
 
@@ -209,6 +203,11 @@ curl -s "https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-sta
 spring:
   application:
     name: scientific-calculator
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
 
 server:
   port: 8080
@@ -223,16 +222,17 @@ calculator:
   division-precision: 34
 ```
 
+**后续如果 404 返回 500 而非 404**，回来检查 `spring.mvc.throw-exception-if-no-handler-found` 与 `spring.web.resources.add-mappings` 两项是否都在。
+
 - [ ] **Step 5: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/config/CalculatorPropertiesTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/infrastructure/config/CalculatorPropertiesTest.java`：
 
 ```java
-package com.wysjwxm.calculator.config;
+package com.wysjwxm.calculator.infrastructure.config;
 
-import com.wysjwxm.calculator.core.AngleUnit;
+import com.wysjwxm.calculator.domain.AngleUnit;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.context.properties.bind.validation.BindValidationException;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -247,14 +247,19 @@ class CalculatorPropertiesTest {
     static class EnableProps { }
 
     @Test
-    void bindsDefaultsFromApplicationYaml() {
-        runner.run(ctx -> {
-            CalculatorProperties props = ctx.getBean(CalculatorProperties.class);
-            assertThat(props.defaultAngleUnit()).isEqualTo(AngleUnit.DEGREE);
-            assertThat(props.historyCapacity()).isEqualTo(1000);
-            assertThat(props.maxExpressionLength()).isEqualTo(1000);
-            assertThat(props.divisionPrecision()).isEqualTo(34);
-        });
+    void bindsValuesFromProperties() {
+        runner.withPropertyValues(
+                "calculator.default-angle-unit=RADIAN",
+                "calculator.history-capacity=50",
+                "calculator.max-expression-length=200",
+                "calculator.division-precision=16")
+             .run(ctx -> {
+                 CalculatorProperties props = ctx.getBean(CalculatorProperties.class);
+                 assertThat(props.defaultAngleUnit()).isEqualTo(AngleUnit.RADIAN);
+                 assertThat(props.historyCapacity()).isEqualTo(50);
+                 assertThat(props.maxExpressionLength()).isEqualTo(200);
+                 assertThat(props.divisionPrecision()).isEqualTo(16);
+             });
     }
 
     @Test
@@ -268,6 +273,21 @@ class CalculatorPropertiesTest {
         runner.withPropertyValues("calculator.division-precision=-1")
               .run(ctx -> assertThat(ctx).hasFailed());
     }
+
+    @Test
+    void rejectsUnknownAngleUnit() {
+        runner.withPropertyValues("calculator.default-angle-unit=GRADIANS")
+              .run(ctx -> assertThat(ctx).hasFailed());
+    }
+
+    @Test
+    void historyCapacityZeroMeansUnbounded() {
+        runner.withPropertyValues("calculator.history-capacity=0")
+              .run(ctx -> {
+                  CalculatorProperties props = ctx.getBean(CalculatorProperties.class);
+                  assertThat(props.historyUnbounded()).isTrue();
+              });
+    }
 }
 ```
 
@@ -279,10 +299,10 @@ class CalculatorPropertiesTest {
 
 - [ ] **Step 7: 创建 AngleUnit**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/AngleUnit.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/AngleUnit.java`：
 
 ```java
-package com.wysjwxm.calculator.core;
+package com.wysjwxm.calculator.domain;
 
 /**
  * 三角函数的角度单位。仅对 sin/cos/tan/asin/acos/atan/atan2 生效，其余函数忽略。
@@ -295,18 +315,24 @@ public enum AngleUnit {
 
 - [ ] **Step 8: 创建 CalculatorProperties**
 
-创建 `src/main/java/com/wysjwxm/calculator/config/CalculatorProperties.java`：
+创建 `src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorProperties.java`：
 
 ```java
-package com.wysjwxm.calculator.config;
+package com.wysjwxm.calculator.infrastructure.config;
 
-import com.wysjwxm.calculator.core.AngleUnit;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
-
+/**
+ * 配置绑定类。属基础设施关切（它认识 Spring），因此放在 infrastructure 而非 domain。
+ *
+ * <p>它不直接注入到 application 层 —— 由同包的 CalculatorConfiguration 翻译成
+ * 下游能用的 bean（Numbers / CalculationPolicy 等），避免 application 反向依赖
+ * infrastructure。
+ */
 @Validated
 @ConfigurationProperties(prefix = "calculator")
 public record CalculatorProperties(
@@ -315,22 +341,20 @@ public record CalculatorProperties(
         @Min(1) int divisionPrecision,
         int historyCapacity
 ) {
-    /**
-     * historyCapacity 允许为 0 或负数，语义为「不限制容量」，因此不加 @Min 约束。
-     */
+    /** historyCapacity 允许为 0 或负数，语义为「不限制容量」，因此不加 @Min 约束。 */
     public boolean historyUnbounded() {
         return historyCapacity <= 0;
     }
 }
 ```
 
-**注**：`jakarta.validation` 由 `spring-boot-starter-web` 传递引入（Tomcat/Spring 依赖链），无需额外声明。若 Step 9 编译报找不到 `jakarta.validation.constraints`，改为在 `CalculatorProperties` 中不加注解、改在 compact constructor 中手工校验并抛 `IllegalArgumentException`（效果相同，都是启动期快速失败）。
+**注**：`jakarta.validation` 由 `spring-boot-starter-web` 的依赖链传递引入，无需额外声明。**若 Step 9 编译报找不到 `jakarta.validation.constraints`**，改为去掉这两个注解，在 record 的紧凑构造器中手工校验并抛 `IllegalArgumentException`（效果相同，都是启动期快速失败）。
 
 - [ ] **Step 9: 运行测试确认通过**
 
 运行：`mvn -q test -Dtest=CalculatorPropertiesTest`
 
-预期：3 个测试全部 PASS。
+预期：5 个测试全部 PASS。
 
 - [ ] **Step 10: 运行全部测试**
 
@@ -342,36 +366,36 @@ public record CalculatorProperties(
 
 ```bash
 git add pom.xml src/main/resources/application.yaml \
-        src/main/java/com/wysjwxm/calculator/config/CalculatorProperties.java \
-        src/main/java/com/wysjwxm/calculator/core/AngleUnit.java \
-        src/test/java/com/wysjwxm/calculator/config/CalculatorPropertiesTest.java
-git commit -m "feat: 构建基线 — 降级至 Spring Boot 3.5.x、引入 web starter、新增配置类"
+        src/main/java/com/wysjwxm/calculator/domain/AngleUnit.java \
+        src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorProperties.java \
+        src/test/java/com/wysjwxm/calculator/infrastructure/config/CalculatorPropertiesTest.java
+git commit -m "feat: 构建基线 — 降级至 Spring Boot 3.5.x、引入 web starter、新增配置绑定"
 ```
 
 ---
 
-### Task 2: 错误类型词汇表
+### Task 2: 领域错误词汇表
 
-建立全项目统一的错误码与业务异常，**不含任何 HTTP 概念**（映射留给 Task 12）。
+建立全项目统一的错误码与领域异常，**不含任何 HTTP 概念**——映射留给 Task 13。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/error/CalcErrorCode.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/error/CalcException.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/error/CalcExceptionTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/error/CalcErrorCode.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/error/CalcException.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/error/CalcExceptionTest.java`
 
 **Interfaces:**
 - Consumes: 无
 - Produces:
   - `CalcErrorCode` 枚举，12 个常量（见 Global Constraints）
   - `CalcException extends RuntimeException`，方法 `CalcErrorCode code()`、`Integer position()`（无位置时为 `null`）
-  - 静态工厂 `CalcException.of(CalcErrorCode code, String message)` 与 `CalcException.at(CalcErrorCode code, String message, int position)`
+  - 静态工厂 `CalcException.of(CalcErrorCode code, String message)`、`CalcException.at(CalcErrorCode code, String message, int position)`
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/error/CalcExceptionTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/error/CalcExceptionTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.error;
+package com.wysjwxm.calculator.domain.error;
 
 import org.junit.jupiter.api.Test;
 
@@ -409,16 +433,16 @@ class CalcExceptionTest {
 
 - [ ] **Step 3: 创建 CalcErrorCode**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/error/CalcErrorCode.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/error/CalcErrorCode.java`：
 
 ```java
-package com.wysjwxm.calculator.core.error;
+package com.wysjwxm.calculator.domain.error;
 
 /**
  * 全项目统一的错误码词汇表。
  *
- * <p>刻意不携带 HTTP 状态码 —— 那属于传输层关切，映射由 api 层的
- * {@code ErrorStatusMapper} 负责。这样 core 包保持对传输协议无感知。
+ * <p>刻意不携带 HTTP 状态码 —— 传输协议是接口层的关切，领域异常不该知道 HTTP
+ * 的存在。映射由 interfaces 层的 ErrorStatusMapper 集中承担（见 spec §7.6）。
  */
 public enum CalcErrorCode {
     PARSE_ERROR,
@@ -438,13 +462,13 @@ public enum CalcErrorCode {
 
 - [ ] **Step 4: 创建 CalcException**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/error/CalcException.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/error/CalcException.java`：
 
 ```java
-package com.wysjwxm.calculator.core.error;
+package com.wysjwxm.calculator.domain.error;
 
 /**
- * 业务异常基类。携带错误码与可选的字符位置（仅语法类错误有位置）。
+ * 领域异常。携带错误码与可选的字符位置（仅语法类错误有位置）。
  */
 public class CalcException extends RuntimeException {
 
@@ -485,52 +509,41 @@ public class CalcException extends RuntimeException {
 - [ ] **Step 6: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/error/ \
-        src/test/java/com/wysjwxm/calculator/core/error/
-git commit -m "feat: 新增错误码词汇表与业务异常基类"
+git add src/main/java/com/wysjwxm/calculator/domain/error/ \
+        src/test/java/com/wysjwxm/calculator/domain/error/
+git commit -m "feat: 领域错误码词汇表与异常基类"
 ```
 
 ---
 
-### Task 3: 数值模型
+### Task 3: 数值值对象
 
-实现混合数值策略：四则运算走 `BigDecimal` 保精确，超越函数走 `double`。**这是整个设计的核心，`0.1 + 0.2` 必须精确等于 `0.3`。**
+混合数值策略：四则运算走 `BigDecimal` 保精确，超越函数走 `double`。**`0.1 + 0.2` 必须精确等于 `0.3`。**
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/number/CalcNumber.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/number/DecimalNumber.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/number/FloatingNumber.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/number/Numbers.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/number/NumbersTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/number/PrecisionTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/number/CalcNumber.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/number/DecimalNumber.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/number/FloatingNumber.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/number/Numbers.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/number/PrecisionTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/number/NumbersTest.java`
 
 **Interfaces:**
 - Consumes: `CalcErrorCode`、`CalcException`（Task 2）
 - Produces:
-  - `sealed interface CalcNumber permits DecimalNumber, FloatingNumber`，方法 `double toDouble()`、`BigDecimal toDecimal()`、`boolean isExact()`
+  - `sealed interface CalcNumber permits DecimalNumber, FloatingNumber`：`double toDouble()`、`BigDecimal toDecimal()`、`boolean isExact()`
   - `record DecimalNumber(BigDecimal value)`、`record FloatingNumber(double value)`
-  - `Numbers` **实例类**（非静态工具类），构造器 `Numbers(int divisionPrecision)`，方法：
-    - `CalcNumber of(long v)` / `CalcNumber of(BigDecimal v)` / `CalcNumber of(double v)`
-    - `CalcNumber add(CalcNumber a, CalcNumber b)`
-    - `CalcNumber subtract(CalcNumber a, CalcNumber b)`
-    - `CalcNumber multiply(CalcNumber a, CalcNumber b)`
-    - `CalcNumber divide(CalcNumber a, CalcNumber b)`
-    - `CalcNumber modulo(CalcNumber a, CalcNumber b)`
-    - `CalcNumber power(CalcNumber base, CalcNumber exponent)`
-    - `CalcNumber negate(CalcNumber a)`
-    - `CalcNumber factorial(CalcNumber a)`
-    - `CalcNumber floating(double v)`
-    - 静态 `void requireFinite(double v, String what)`
+  - `Numbers`（领域服务，**实例类**）：构造器 `Numbers(int divisionPrecision)`；方法 `of(long)`、`of(BigDecimal)`、`floating(double)`、`add`、`subtract`、`multiply`、`divide`、`modulo`、`power`、`negate`、`factorial`（均接受并返回 `CalcNumber`）；静态 `void requireFinite(double v, String what)`
 
-- [ ] **Step 1: 写失败测试 — 精度**
+- [ ] **Step 1: 写精度失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/number/PrecisionTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/number/PrecisionTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -540,7 +553,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 本设计数值模型存在的理由：精确路径必须真的精确。
- * 这些断言使用 equals 而非 delta 比较 —— delta 比较就等于放弃了精度保证。
+ * 这些断言用 equals 而非 delta 比较 —— delta 比较就等于放弃了精度保证。
  */
 class PrecisionTest {
 
@@ -588,7 +601,8 @@ class PrecisionTest {
     void powerWithFractionalExponentGoesFloating() {
         CalcNumber result = numbers.power(numbers.of(2L), numbers.floating(0.5));
         assertThat(result).isInstanceOf(FloatingNumber.class);
-        assertThat(result.toDouble()).isCloseTo(Math.sqrt(2), org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(result.toDouble()).isCloseTo(Math.sqrt(2),
+                org.assertj.core.data.Offset.offset(1e-12));
     }
 
     @Test
@@ -645,12 +659,12 @@ class PrecisionTest {
 
 预期：编译失败，`Numbers` 不存在。
 
-- [ ] **Step 3: 创建 CalcNumber**
+- [ ] **Step 3: 创建 CalcNumber 与两个实现**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/number/CalcNumber.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/number/CalcNumber.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
 import java.math.BigDecimal;
 
@@ -661,8 +675,8 @@ import java.math.BigDecimal;
  *   <li>{@link FloatingNumber} —— 超越函数路径，存在浮点误差</li>
  * </ul>
  *
- * <p>保底不变量：结果只要落在 DecimalNumber 就永远精确；
- * 一旦沾了 FloatingNumber 即存在浮点误差。
+ * <p>保底不变量：结果只要落在 DecimalNumber 就永远精确；一旦沾了 FloatingNumber
+ * 即存在浮点误差。此不变量在测试中固定。
  */
 public sealed interface CalcNumber permits DecimalNumber, FloatingNumber {
 
@@ -675,12 +689,10 @@ public sealed interface CalcNumber permits DecimalNumber, FloatingNumber {
 }
 ```
 
-- [ ] **Step 4: 创建两个实现**
-
-创建 `src/main/java/com/wysjwxm/calculator/core/number/DecimalNumber.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/number/DecimalNumber.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -708,10 +720,10 @@ public record DecimalNumber(BigDecimal value) implements CalcNumber {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/number/FloatingNumber.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/number/FloatingNumber.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
 import java.math.BigDecimal;
 
@@ -734,22 +746,22 @@ public record FloatingNumber(double value) implements CalcNumber {
 }
 ```
 
-- [ ] **Step 5: 创建 Numbers**
+- [ ] **Step 4: 创建 Numbers**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/number/Numbers.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/number/Numbers.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
 
 /**
- * 算术运算与类型提升。所有提升规则集中在此，不散落到求值器里。
+ * 算术运算与类型提升的领域服务。所有提升规则集中在此，不散落到求值器里。
  *
  * <p>实例类而非静态工具类，因为除法精度来自配置 —— 把 MathContext 作为
  * 构造参数注入，测试才能固定精度。
@@ -774,10 +786,6 @@ public final class Numbers {
 
     public CalcNumber of(BigDecimal v) {
         return new DecimalNumber(v);
-    }
-
-    public CalcNumber of(double v) {
-        return floating(v);
     }
 
     public CalcNumber floating(double v) {
@@ -810,10 +818,10 @@ public final class Numbers {
             throw CalcException.of(CalcErrorCode.DIVISION_BY_ZERO, "除数不能为零");
         }
         if (bothExact(a, b)) {
-            // 能整除时给出精确结果，除不尽时才按配置精度截断
             BigDecimal dividend = a.toDecimal();
             BigDecimal divisor = b.toDecimal();
             try {
+                // 能整除时给出精确结果，除不尽时才按配置精度截断
                 return new DecimalNumber(dividend.divide(divisor));
             } catch (ArithmeticException nonTerminating) {
                 return new DecimalNumber(dividend.divide(divisor, divisionContext));
@@ -840,7 +848,7 @@ public final class Numbers {
                 try {
                     return new DecimalNumber(base.toDecimal().pow(exp.intValueExact()));
                 } catch (ArithmeticException overflow) {
-                    // 指数过大导致超出可表示范围，降级到 double 由 requireFinite 兜底
+                    // 指数过大导致结果超出可表示范围（如 9^9^9），降级到 double 由 requireFinite 兜底
                     return floatingFinite(Math.pow(base.toDouble(), exp.doubleValue()), "幂运算");
                 }
             }
@@ -858,7 +866,8 @@ public final class Numbers {
     public CalcNumber factorial(CalcNumber a) {
         BigDecimal n = a.toDecimal();
         if (n.stripTrailingZeros().scale() > 0 || n.signum() < 0) {
-            throw CalcException.of(CalcErrorCode.DOMAIN_ERROR, "阶乘只接受非负整数，实际为 " + n.toPlainString());
+            throw CalcException.of(CalcErrorCode.DOMAIN_ERROR,
+                    "阶乘只接受非负整数，实际为 " + n.toPlainString());
         }
         int value = n.intValueExact();
         if (value > FACTORIAL_LIMIT) {
@@ -894,21 +903,23 @@ public final class Numbers {
 }
 ```
 
-- [ ] **Step 6: 运行测试确认通过**
+- [ ] **Step 5: 运行精度测试确认通过**
 
 运行：`mvn -q test -Dtest=PrecisionTest`
 
 预期：12 个测试全部 PASS。
 
-- [ ] **Step 7: 写 Numbers 补充测试**
+**若 `powerWithNonNegativeIntegerExponentStaysExact` 失败**：检查 `stripTrailingZeros().scale() <= 0` 这个判据 —— 整数 `BigDecimal` 的 scale 应 ≤ 0。
 
-创建 `src/test/java/com/wysjwxm/calculator/core/number/NumbersTest.java`：
+- [ ] **Step 6: 写 Numbers 补充测试**
+
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/number/NumbersTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.number;
+package com.wysjwxm.calculator.domain.model.number;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -962,54 +973,176 @@ class NumbersTest {
 
     @Test
     void decimalNeverConvertsSilentlyThroughDouble() {
-        // 用 double 无法精确表示的值走 decimal 路径仍然精确
+        // double 无法精确表示 9007199254740993，走 decimal 路径仍然精确
         CalcNumber result = numbers.add(
                 numbers.of(new BigDecimal("9007199254740993")), numbers.of(1L));
         assertThat(result.toDecimal()).isEqualTo(new BigDecimal("9007199254740994"));
     }
+
+    @Test
+    void hugePowerFallsBackToFloatingWithoutThrowingArithmeticException() {
+        // 9^9 = 387420489 可装进 int，但 BigDecimal.pow 会因结果过大而抛 ArithmeticException
+        CalcNumber nine = numbers.of(9L);
+        CalcNumber exponent = numbers.power(nine, nine);
+        assertThatThrownBy(() -> numbers.power(nine, exponent))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
 }
 ```
 
-- [ ] **Step 8: 运行全部测试**
+- [ ] **Step 7: 运行全部测试**
 
 运行：`mvn -q test`
 
 预期：全部 PASS。
 
-- [ ] **Step 9: 提交**
+**若 `hugePowerFallsBackToFloatingWithoutThrowingArithmeticException` 抛出的是 `ArithmeticException` 而非 `CalcException`**：说明 `Numbers.power` 的 `catch (ArithmeticException)` 没有正确降级 —— 检查降级路径是否走了 `floatingFinite`。
+
+- [ ] **Step 8: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/number/ \
-        src/test/java/com/wysjwxm/calculator/core/number/
-git commit -m "feat: 数值模型 — CalcNumber 家族与混合精度算术"
+git add src/main/java/com/wysjwxm/calculator/domain/model/number/ \
+        src/test/java/com/wysjwxm/calculator/domain/model/number/
+git commit -m "feat: 数值值对象 — CalcNumber 家族与混合精度算术领域服务"
 ```
 
 ---
 
-### Task 4: 词法分析
+### Task 4: 表达式原文值对象与词法分析
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/lexer/TokenType.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/lexer/Token.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/lexer/Lexer.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/lexer/LexerTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/ExpressionText.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/TokenType.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/Token.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/Lexer.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/ExpressionTextTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/parse/LexerTest.java`
 
 **Interfaces:**
 - Consumes: `CalcErrorCode`、`CalcException`（Task 2）
 - Produces:
-  - `enum TokenType`：`NUMBER IDENT PLUS MINUS STAR SLASH PERCENT CARET BANG LPAREN RPAREN COMMA EOF`
+  - `record ExpressionText(String value)`，紧凑构造器校验：非 null、非空白、去首尾空白
+  - `enum TokenType { NUMBER IDENT PLUS MINUS STAR SLASH PERCENT CARET BANG LPAREN RPAREN COMMA EOF }`
   - `record Token(TokenType type, String lexeme, int position)`
-  - `Lexer`，构造器 `Lexer(String input)`，方法 `List<Token> tokenize()`（末尾恒有 `EOF`，出错抛 `PARSE_ERROR` 带 position）
+  - `Lexer(String input)` 方法 `List<Token> tokenize()`（末尾恒有 `EOF`，出错抛 `PARSE_ERROR` 带 position）
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 写 ExpressionText 失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/lexer/LexerTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/ExpressionTextTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.lexer;
+package com.wysjwxm.calculator.domain.model.expression;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * ExpressionText 只校验语言层面的不变量（非空、非空白、去首尾空白）。
+ * 长度上限是资源保护策略，由 CalculationUseCase 依据 CalculationPolicy 强制
+ * —— 见 spec §4.3。
+ */
+class ExpressionTextTest {
+
+    @Test
+    void trimsSurroundingWhitespace() {
+        assertThat(new ExpressionText("  1+2  ").value()).isEqualTo("1+2");
+    }
+
+    @Test
+    void keepsInnerWhitespace() {
+        assertThat(new ExpressionText(" 1 + 2 ").value()).isEqualTo("1 + 2");
+    }
+
+    @Test
+    void rejectsNull() {
+        assertThatThrownBy(() -> new ExpressionText(null))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void rejectsBlank() {
+        assertThatThrownBy(() -> new ExpressionText("   "))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void rejectsEmpty() {
+        assertThatThrownBy(() -> new ExpressionText(""))
+                .isInstanceOf(CalcException.class);
+    }
+
+    @Test
+    void veryLongExpressionIsAcceptedByTheValueObject() {
+        // 长度不属值对象职责；这里断言它不因此报错
+        String longExpression = "1+".repeat(5000) + "1";
+        assertThat(new ExpressionText(longExpression).value()).hasSize(longExpression.length());
+    }
+}
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+运行：`mvn -q test -Dtest=ExpressionTextTest`
+
+预期：编译失败，`ExpressionText` 不存在。
+
+- [ ] **Step 3: 创建 ExpressionText**
+
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/ExpressionText.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.expression;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+
+/**
+ * 表达式原文的值对象：调用方提交的原始文本，仅去除首尾空白，不做规范化改写。
+ *
+ * <p>只承载**语言层面的不变量**。长度上限是资源保护策略（且来自可配置项），
+ * 不属于这里的职责 —— 把它塞进构造器会让语言值对象依赖运行时配置。长度由
+ * CalculationUseCase 依据 CalculationPolicy 强制。
+ */
+public record ExpressionText(String value) {
+
+    public ExpressionText {
+        if (value == null) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "expression 不能为空");
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "expression 不能为空白");
+        }
+        value = trimmed;
+    }
+}
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+运行：`mvn -q test -Dtest=ExpressionTextTest`
+
+预期：6 个测试 PASS。
+
+- [ ] **Step 5: 写词法失败测试**
+
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/parse/LexerTest.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.expression.parse;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -1035,8 +1168,7 @@ class LexerTest {
 
     @Test
     void recordsAbsolutePositions() {
-        List<Token> tokens = lex("1 + 22");
-        assertThat(tokens).extracting(Token::position).containsExactly(0, 2, 4, 7);
+        assertThat(lex("1 + 22")).extracting(Token::position).containsExactly(0, 2, 4, 7);
     }
 
     @Test
@@ -1051,9 +1183,8 @@ class LexerTest {
     }
 
     @Test
-    void doesNotSwallowMinusOfScientificNotationAsOperator() {
-        assertThat(types("1e-3"))
-                .containsExactly(TokenType.NUMBER, TokenType.EOF);
+    void doesNotSplitMinusOutOfScientificNotation() {
+        assertThat(types("1e-3")).containsExactly(TokenType.NUMBER, TokenType.EOF);
     }
 
     @Test
@@ -1101,24 +1232,31 @@ class LexerTest {
     }
 
     @Test
+    void loneDotIsRejected() {
+        assertThatThrownBy(() -> lex("."))
+                .isInstanceOf(CalcException.class)
+                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(0));
+    }
+
+    @Test
     void emptyInputYieldsOnlyEof() {
         assertThat(types("")).containsExactly(TokenType.EOF);
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 6: 运行确认失败**
 
 运行：`mvn -q test -Dtest=LexerTest`
 
 预期：编译失败，`Lexer` 不存在。
 
-- [ ] **Step 3: 创建 TokenType 与 Token**
+- [ ] **Step 7: 创建 TokenType、Token、Lexer**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/lexer/TokenType.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/TokenType.java`：
 
 ```java
-package com.wysjwxm.calculator.core.lexer;
+package com.wysjwxm.calculator.domain.model.expression.parse;
 
 public enum TokenType {
     NUMBER,
@@ -1137,10 +1275,10 @@ public enum TokenType {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/lexer/Token.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/Token.java`：
 
 ```java
-package com.wysjwxm.calculator.core.lexer;
+package com.wysjwxm.calculator.domain.model.expression.parse;
 
 /**
  * @param position 起始字符下标（0 基），供错误定位使用
@@ -1149,15 +1287,13 @@ public record Token(TokenType type, String lexeme, int position) {
 }
 ```
 
-- [ ] **Step 4: 创建 Lexer**
-
-创建 `src/main/java/com/wysjwxm/calculator/core/lexer/Lexer.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/Lexer.java`：
 
 ```java
-package com.wysjwxm.calculator.core.lexer;
+package com.wysjwxm.calculator.domain.model.expression.parse;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -1196,20 +1332,18 @@ public final class Lexer {
     }
 
     private Token readNumber(int start) {
-        // 整数部分
         while (pos < input.length() && Character.isDigit(input.charAt(pos))) {
             pos++;
         }
-        // 小数部分
         if (pos < input.length() && input.charAt(pos) == '.') {
             pos++;
             while (pos < input.length() && Character.isDigit(input.charAt(pos))) {
                 pos++;
             }
         }
-        // 指数部分：e/E 后面必须紧跟可选符号 + 至少一位数字，否则不吞掉 e
+        // 指数部分：e/E 后必须紧跟可选符号 + 至少一位数字，否则报错
         if (pos < input.length() && (input.charAt(pos) == 'e' || input.charAt(pos) == 'E')) {
-            int save = pos;
+            int exponentStart = pos;
             pos++;
             if (pos < input.length() && (input.charAt(pos) == '+' || input.charAt(pos) == '-')) {
                 pos++;
@@ -1219,9 +1353,8 @@ public final class Lexer {
                     pos++;
                 }
             } else {
-                // 不是合法的科学计数法，回退（例如 "1e" 应报错，而不是拆成 NUMBER(1) IDENT(e)）
-                pos = save;
-                throw CalcException.at(CalcErrorCode.PARSE_ERROR, "科学计数法指数部分不完整", save);
+                throw CalcException.at(CalcErrorCode.PARSE_ERROR,
+                        "科学计数法指数部分不完整", exponentStart);
             }
         }
         String lexeme = input.substring(start, pos);
@@ -1267,53 +1400,48 @@ public final class Lexer {
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 8: 运行全部测试**
 
-运行：`mvn -q test -Dtest=LexerTest`
+运行：`mvn -q test -Dtest='ExpressionTextTest,LexerTest'`
 
-预期：12 个测试全部 PASS。
+预期：19 个测试全部 PASS。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 9: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/lexer/ \
-        src/test/java/com/wysjwxm/calculator/core/lexer/
-git commit -m "feat: 表达式词法分析器，Token 携带字符位置"
+git add src/main/java/com/wysjwxm/calculator/domain/model/expression/ \
+        src/test/java/com/wysjwxm/calculator/domain/model/expression/
+git commit -m "feat: 表达式原文值对象与词法分析器"
 ```
 
 ---
 
-### Task 5: 算子表
+### Task 5: 算子值对象与算子表
 
-建立算子的**唯一事实来源**。解析器与 `/functions` 清单都从这里读，杜绝两处优先级漂移。
+建立算子优先级的**唯一事实来源**。解析器与 `/functions` 清单都从这里读，杜绝两处漂移。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/operator/Fixity.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/operator/Associativity.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/operator/Operator.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/operator/OperatorTable.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/operator/OperatorTableTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/Fixity.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/Associativity.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/Operator.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/OperatorTable.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/OperatorTableTest.java`
 
 **Interfaces:**
 - Consumes: `TokenType`（Task 4）
 - Produces:
-  - `enum Fixity { INFIX, PREFIX, POSTFIX }`
-  - `enum Associativity { LEFT, RIGHT }`
+  - `enum Fixity { INFIX, PREFIX, POSTFIX }`、`enum Associativity { LEFT, RIGHT }`
   - `record Operator(String symbol, Fixity fixity, int precedence, Associativity associativity)`（`associativity` 对 PREFIX/POSTFIX 为 `null`）
-  - `OperatorTable` 静态方法：
-    - `Optional<Operator> infix(TokenType type)`
-    - `Optional<Operator> prefix(TokenType type)`
-    - `Optional<Operator> postfix(TokenType type)`
-    - `List<Operator> all()`
+  - `OperatorTable` 静态方法：`Optional<Operator> infix(TokenType)`、`Optional<Operator> prefix(TokenType)`、`Optional<Operator> postfix(TokenType)`、`List<Operator> all()`
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/operator/OperatorTableTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/OperatorTableTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
-import com.wysjwxm.calculator.core.lexer.TokenType;
+import com.wysjwxm.calculator.domain.model.expression.parse.TokenType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -1321,8 +1449,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * OperatorTable 是算子优先级的唯一事实来源。这些断言把 spec §6.3 的
- * 三条规则钉死在数据上 —— 解析器读的就是这份数据。
+ * OperatorTable 是算子优先级的唯一事实来源。这些断言把 spec §6.3 的三条规则
+ * 钉死在数据上 —— 解析器读的就是这份数据。
  */
 class OperatorTableTest {
 
@@ -1375,7 +1503,6 @@ class OperatorTableTest {
 
     @Test
     void allExposesNineOperatorEntries() {
-        // + - (infix), + - (prefix), * / %, ^, !  →  9 条
         List<Operator> all = OperatorTable.all();
         assertThat(all).hasSize(9);
         assertThat(all.stream().filter(o -> o.symbol().equals("-"))).hasSize(2);
@@ -1384,14 +1511,20 @@ class OperatorTableTest {
 
     @Test
     void symbolsUseMathematicalNotationNotNames() {
-        // 保证清单里出现的是 + 而不是 "add" —— 见 spec §12 D3/D8
+        // 清单里出现的是 + 而不是 "add" —— 见 spec §12 D3/D8
         assertThat(OperatorTable.all()).extracting(Operator::symbol)
                 .containsExactlyInAnyOrder("+", "+", "-", "-", "*", "/", "%", "^", "!");
+    }
+
+    @Test
+    void prefixAndPostfixOperatorsHaveNoAssociativity() {
+        assertThat(OperatorTable.prefix(TokenType.MINUS).orElseThrow().associativity()).isNull();
+        assertThat(OperatorTable.postfix(TokenType.BANG).orElseThrow().associativity()).isNull();
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: 运行确认失败**
 
 运行：`mvn -q test -Dtest=OperatorTableTest`
 
@@ -1399,10 +1532,10 @@ class OperatorTableTest {
 
 - [ ] **Step 3: 创建枚举与 Operator**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/operator/Fixity.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/Fixity.java`：
 
 ```java
-package com.wysjwxm.calculator.core.operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 public enum Fixity {
     INFIX,
@@ -1411,10 +1544,10 @@ public enum Fixity {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/operator/Associativity.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/Associativity.java`：
 
 ```java
-package com.wysjwxm.calculator.core.operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 public enum Associativity {
     LEFT,
@@ -1422,10 +1555,10 @@ public enum Associativity {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/operator/Operator.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/Operator.java`：
 
 ```java
-package com.wysjwxm.calculator.core.operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 /**
  * @param precedence    数值越大结合越紧
@@ -1437,12 +1570,12 @@ public record Operator(String symbol, Fixity fixity, int precedence, Associativi
 
 - [ ] **Step 4: 创建 OperatorTable**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/operator/OperatorTable.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/OperatorTable.java`：
 
 ```java
-package com.wysjwxm.calculator.core.operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
-import com.wysjwxm.calculator.core.lexer.TokenType;
+import com.wysjwxm.calculator.domain.model.expression.parse.TokenType;
 
 import java.util.EnumMap;
 import java.util.List;
@@ -1508,83 +1641,118 @@ public final class OperatorTable {
     public static List<Operator> all() {
         return ALL;
     }
-
-    /**
-     * 运算符 TokenType 是否有对应的中缀语义 —— 求值器据此分派算术实现。
-     */
-    public static boolean isArithmeticInfix(TokenType type) {
-        return INFIX.containsKey(type);
-    }
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: 运行确认通过**
 
 运行：`mvn -q test -Dtest=OperatorTableTest`
 
-预期：7 个测试全部 PASS。
+预期：8 个测试 PASS。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/operator/ \
-        src/test/java/com/wysjwxm/calculator/core/operator/
-git commit -m "feat: 算子表 — 优先级与结合性的唯一事实来源"
+git add src/main/java/com/wysjwxm/calculator/domain/model/expression/Fixity.java \
+        src/main/java/com/wysjwxm/calculator/domain/model/expression/Associativity.java \
+        src/main/java/com/wysjwxm/calculator/domain/model/expression/Operator.java \
+        src/main/java/com/wysjwxm/calculator/domain/model/expression/OperatorTable.java \
+        src/test/java/com/wysjwxm/calculator/domain/model/expression/OperatorTableTest.java
+git commit -m "feat: 算子值对象与算子表 — 优先级与结合性的唯一事实来源"
 ```
 
 ---
 
-### Task 6: AST 与优先级爬升解析器
+### Task 6: 表达式 AST 与解析器
+
+**注意**：解析器必须**无状态** —— 游标封在每次调用创建的局部对象里，否则注册为 Spring 单例后会被并发请求互相踩踏（spec §4.3）。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/Expression.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/LiteralExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/VariableExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/UnaryExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/PostfixExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/BinaryExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ast/CallExpr.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ExpressionPrinter.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/parser/ExpressionParser.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/parser/ExpressionParserTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/Expression.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/LiteralExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/VariableExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/UnaryExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/PostfixExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/BinaryExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/CallExpr.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/ExpressionParser.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/ExpressionPrinter.java`（**测试辅助，放 test 源码**）
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/parse/ExpressionParserTest.java`
 
 **Interfaces:**
-- Consumes: `Lexer`、`Token`、`TokenType`（Task 4）；`Operator`、`OperatorTable`、`Associativity`、`Fixity`（Task 5）；`CalcNumber`、`DecimalNumber`（Task 3）
+- Consumes: `Lexer`、`Token`、`TokenType`（Task 4）；`Operator`、`OperatorTable`、`Associativity`（Task 5）；`CalcNumber`、`DecimalNumber`（Task 3）；`ExpressionText`（Task 4）
 - Produces:
   - `sealed interface Expression permits LiteralExpr, VariableExpr, UnaryExpr, PostfixExpr, BinaryExpr, CallExpr`
-  - `record LiteralExpr(CalcNumber value)`
-  - `record VariableExpr(String name, int position)`
-  - `record UnaryExpr(Operator operator, Expression operand)`
-  - `record PostfixExpr(Operator operator, Expression operand)`
-  - `record BinaryExpr(Operator operator, Expression left, Expression right)`
-  - `record CallExpr(String functionName, List<Expression> arguments, int position)`
-  - `ExpressionParser`，构造器 `ExpressionParser()`，方法 `Expression parse(String expression)`（**留白未做 trim**，调用方负责）
-  - `ExpressionPrinter.toInfix(Expression)` → `String`，供测试断言 AST 结构
+  - `record LiteralExpr(CalcNumber value)`、`record VariableExpr(String name, int position)`、`record UnaryExpr(Operator operator, Expression operand)`、`record PostfixExpr(Operator operator, Expression operand)`、`record BinaryExpr(Operator operator, Expression left, Expression right)`、`record CallExpr(String functionName, List<Expression> arguments, int position)`
+  - `ExpressionParser`（**无状态**）：构造器 `ExpressionParser()`，方法 `Expression parse(ExpressionText text)`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 写测试辅助 ExpressionPrinter**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/parser/ExpressionParserTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/ExpressionPrinter.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser;
+package com.wysjwxm.calculator.domain.model.expression;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import java.util.stream.Collectors;
+
+/**
+ * 把 AST 打印成完全括号化的中缀文本，**仅用于测试断言与调试**，因此放在 test 源码。
+ *
+ * <p>每个二元运算都加括号，字符串本身就唯一确定了树的结构 —— 这让优先级与
+ * 结合性的测试一眼可读，比逐层 getter 断言更不易看错。
+ */
+public final class ExpressionPrinter {
+
+    private ExpressionPrinter() {
+    }
+
+    public static String toInfix(Expression expr) {
+        return switch (expr) {
+            case LiteralExpr l -> l.value().toDecimal().stripTrailingZeros().toPlainString();
+            case VariableExpr v -> v.name();
+            case UnaryExpr u -> "(" + u.operator().symbol() + toInfix(u.operand()) + ")";
+            case PostfixExpr p -> "(" + toInfix(p.operand()) + p.operator().symbol() + ")";
+            case BinaryExpr b -> "(" + toInfix(b.left()) + " " + b.operator().symbol()
+                    + " " + toInfix(b.right()) + ")";
+            case CallExpr c -> c.functionName() + "(" + c.arguments().stream()
+                    .map(ExpressionPrinter::toInfix)
+                    .collect(Collectors.joining(", ")) + ")";
+        };
+    }
+}
+```
+
+- [ ] **Step 2: 写失败测试**
+
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/parse/ExpressionParserTest.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.expression.parse;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionPrinter;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.expression.LiteralExpr;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * 用括号完全显式化的中缀打印来做 AST 结构断言 —— 比逐层 getter 断言更易读，
- * 也更容易看出优先级绑定是否符合预期。
- */
 class ExpressionParserTest {
 
     private final ExpressionParser parser = new ExpressionParser();
 
     private String infix(String input) {
-        return ExpressionPrinter.toInfix(parser.parse(input));
+        return ExpressionPrinter.toInfix(parser.parse(new ExpressionText(input)));
     }
 
     // ---------- 结构与优先级 ----------
@@ -1622,7 +1790,7 @@ class ExpressionParserTest {
     }
 
     @Test
-    void factorialBindsTighterThanEverything() {
+    void factorialBindsTighterThanAddition() {
         // spec §6.3：3! + 1 == 7
         assertThat(infix("3!+1")).isEqualTo("((3!) + 1)");
     }
@@ -1688,16 +1856,21 @@ class ExpressionParserTest {
 
     @Test
     void literalKeepsDecimalExactness() {
-        LiteralExpr literal = (LiteralExpr) parser.parse("0.1");
+        LiteralExpr literal = (LiteralExpr) parser.parse(new ExpressionText("0.1"));
         assertThat(literal.value().isExact()).isTrue();
         assertThat(literal.value().toDecimal()).isEqualByComparingTo("0.1");
+    }
+
+    @Test
+    void expressionTextIsTrimmedBeforeParsing() {
+        assertThat(infix("  1+2  ")).isEqualTo("(1 + 2)");
     }
 
     // ---------- 错误与位置 ----------
 
     @Test
     void missingClosingParenReportsPosition() {
-        assertThatThrownBy(() -> parser.parse("sin(30"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("sin(30")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> {
                     CalcException ce = (CalcException) e;
@@ -1708,67 +1881,98 @@ class ExpressionParserTest {
 
     @Test
     void unexpectedTokenReportsPosition() {
-        assertThatThrownBy(() -> parser.parse("1 + * 2"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("1 + * 2")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(4));
     }
 
     @Test
     void trailingOperatorReportsPosition() {
-        assertThatThrownBy(() -> parser.parse("1 +"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("1 +")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(3));
     }
 
     @Test
     void mismatchedParenReportsPosition() {
-        assertThatThrownBy(() -> parser.parse("(1+2"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("(1+2")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(4));
     }
 
     @Test
-    void emptyInputReportsPositionZero() {
-        assertThatThrownBy(() -> parser.parse(""))
+    void strayClosingParenIsRejected() {
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("(1+2))")))
                 .isInstanceOf(CalcException.class)
-                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(0));
+                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(5));
     }
 
     @Test
     void missingCallClosingParenReportsPosition() {
-        assertThatThrownBy(() -> parser.parse("max(1,2"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("max(1,2")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(7));
     }
 
     @Test
     void trailingCommaInCallIsRejected() {
-        assertThatThrownBy(() -> parser.parse("max(1,)"))
+        assertThatThrownBy(() -> parser.parse(new ExpressionText("max(1,)")))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(6));
     }
 
+    // ---------- 无状态（并发安全） ----------
+
     @Test
-    void strayClosingParenIsRejected() {
-        assertThatThrownBy(() -> parser.parse("(1+2))"))
-                .isInstanceOf(CalcException.class)
-                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(5));
+    void parserIsStatelessAndSafeForConcurrentUse() throws Exception {
+        // 同一个解析器实例被多线程共享 —— Spring 单例场景。若游标是实例字段，
+        // 这里的断言会因线程互相踩踏而失败。
+        int threads = 8;
+        int perThread = 500;
+        List<Callable<Boolean>> tasks = IntStream.range(0, threads)
+                .mapToObj(t -> (Callable<Boolean>) () -> {
+                    for (int i = 0; i < perThread; i++) {
+                        if (!infix("1+2*3").equals("(1 + (2 * 3))")) {
+                            return false;
+                        }
+                        if (!infix("2^3^2").equals("(2 ^ (3 ^ 2))")) {
+                            return false;
+                        }
+                        if (!infix("sin(30)+1").equals("(sin(30) + 1)")) {
+                            return false;
+                        }
+                    }
+                    return true;
+                })
+                .toList();
+
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            List<Future<Boolean>> futures = pool.invokeAll(tasks);
+            for (Future<Boolean> future : futures) {
+                assertThat(future.get(30, TimeUnit.SECONDS))
+                        .as("并发解析结果被污染 —— 解析器可能不是无状态的")
+                        .isTrue();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 3: 运行确认失败**
 
 运行：`mvn -q test -Dtest=ExpressionParserTest`
 
 预期：编译失败，`ExpressionParser` 不存在。
 
-- [ ] **Step 3: 创建 AST 节点**
+- [ ] **Step 4: 创建 AST 节点**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/Expression.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/Expression.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
+package com.wysjwxm.calculator.domain.model.expression;
 
 /**
  * 表达式语法树。sealed 让求值器可以用穷尽的 switch 模式匹配，
@@ -1779,21 +1983,21 @@ public sealed interface Expression
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/LiteralExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/LiteralExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
+package com.wysjwxm.calculator.domain.model.expression;
 
-import com.wysjwxm.calculator.core.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 public record LiteralExpr(CalcNumber value) implements Expression {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/VariableExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/VariableExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
+package com.wysjwxm.calculator.domain.model.expression;
 
 /**
  * @param position 标识符在原文中的起始下标，供「未定义变量」报错定位
@@ -1802,50 +2006,45 @@ public record VariableExpr(String name, int position) implements Expression {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/UnaryExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/UnaryExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
-
-import com.wysjwxm.calculator.core.operator.Operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 public record UnaryExpr(Operator operator, Expression operand) implements Expression {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/PostfixExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/PostfixExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
-
-import com.wysjwxm.calculator.core.operator.Operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 public record PostfixExpr(Operator operator, Expression operand) implements Expression {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/BinaryExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/BinaryExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
-
-import com.wysjwxm.calculator.core.operator.Operator;
+package com.wysjwxm.calculator.domain.model.expression;
 
 public record BinaryExpr(Operator operator, Expression left, Expression right) implements Expression {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ast/CallExpr.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/CallExpr.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser.ast;
+package com.wysjwxm.calculator.domain.model.expression;
 
 import java.util.List;
 
 /**
  * @param position 函数名在原文中的起始下标，供「未知函数」报错定位
  */
-public record CallExpr(String functionName, List<Expression> arguments, int position) implements Expression {
+public record CallExpr(String functionName, List<Expression> arguments, int position)
+        implements Expression {
 
     public CallExpr {
         arguments = List.copyOf(arguments);
@@ -1853,73 +2052,27 @@ public record CallExpr(String functionName, List<Expression> arguments, int posi
 }
 ```
 
-- [ ] **Step 4: 创建 ExpressionPrinter**
-
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ExpressionPrinter.java`：
-
-```java
-package com.wysjwxm.calculator.core.parser;
-
-import com.wysjwxm.calculator.core.parser.ast.BinaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.CallExpr;
-import com.wysjwxm.calculator.core.parser.ast.Expression;
-import com.wysjwxm.calculator.core.parser.ast.LiteralExpr;
-import com.wysjwxm.calculator.core.parser.ast.PostfixExpr;
-import com.wysjwxm.calculator.core.parser.ast.UnaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.VariableExpr;
-
-import java.util.stream.Collectors;
-
-/**
- * 把 AST 打印成完全括号化的中缀文本，仅用于测试断言与调试。
- *
- * <p>每个二元运算都加括号，因此字符串本身就唯一确定了树的结构 ——
- * 这让优先级与结合性的测试一眼可读。
- */
-public final class ExpressionPrinter {
-
-    private ExpressionPrinter() {
-    }
-
-    public static String toInfix(Expression expr) {
-        return switch (expr) {
-            case LiteralExpr l -> l.value().toDecimal().stripTrailingZeros().toPlainString();
-            case VariableExpr v -> v.name();
-            case UnaryExpr u -> "(" + u.operator().symbol() + toInfix(u.operand()) + ")";
-            case PostfixExpr p -> "(" + toInfix(p.operand()) + p.operator().symbol() + ")";
-            case BinaryExpr b -> "(" + toInfix(b.left()) + " " + b.operator().symbol()
-                    + " " + toInfix(b.right()) + ")";
-            case CallExpr c -> c.functionName() + "(" + c.arguments().stream()
-                    .map(ExpressionPrinter::toInfix)
-                    .collect(Collectors.joining(", ")) + ")";
-        };
-    }
-}
-```
-
 - [ ] **Step 5: 创建 ExpressionParser**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/parser/ExpressionParser.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/parse/ExpressionParser.java`：
 
 ```java
-package com.wysjwxm.calculator.core.parser;
+package com.wysjwxm.calculator.domain.model.expression.parse;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.lexer.Lexer;
-import com.wysjwxm.calculator.core.lexer.Token;
-import com.wysjwxm.calculator.core.lexer.TokenType;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.core.operator.Associativity;
-import com.wysjwxm.calculator.core.operator.Operator;
-import com.wysjwxm.calculator.core.operator.OperatorTable;
-import com.wysjwxm.calculator.core.parser.ast.BinaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.CallExpr;
-import com.wysjwxm.calculator.core.parser.ast.Expression;
-import com.wysjwxm.calculator.core.parser.ast.LiteralExpr;
-import com.wysjwxm.calculator.core.parser.ast.PostfixExpr;
-import com.wysjwxm.calculator.core.parser.ast.UnaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.VariableExpr;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.expression.Associativity;
+import com.wysjwxm.calculator.domain.model.expression.BinaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.CallExpr;
+import com.wysjwxm.calculator.domain.model.expression.Expression;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.expression.LiteralExpr;
+import com.wysjwxm.calculator.domain.model.expression.Operator;
+import com.wysjwxm.calculator.domain.model.expression.OperatorTable;
+import com.wysjwxm.calculator.domain.model.expression.PostfixExpr;
+import com.wysjwxm.calculator.domain.model.expression.UnaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.VariableExpr;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -1929,130 +2082,144 @@ import java.util.Optional;
 /**
  * 优先级爬升（precedence climbing）式递归下降解析器。
  *
+ * <p><b>无状态。</b>解析所需的游标（tokens + index）封在每次调用创建的
+ * {@link ParseRun} 里，因此本类可以被多线程安全共享，注册为 Spring 单例无风险。
+ * 若把游标做成实例字段，并发请求会互相踩踏。
+ *
  * <p>优先级与结合性全部来自 {@link OperatorTable}，解析器自身不含任何硬编码的
  * 优先级数值 —— 这样 /functions 能力清单（同样由 OperatorTable 生成）不可能
  * 与实际解析行为不一致。
  */
 public final class ExpressionParser {
 
-    /** 最松的结合层级，作为入口。 */
-    private static final int MIN_PRECEDENCE = 0;
-
-    private List<Token> tokens;
-    private int index;
-
-    public Expression parse(String expression) {
-        this.tokens = new Lexer(expression).tokenize();
-        this.index = 0;
-        Expression result = parseExpression(MIN_PRECEDENCE);
-        Token trailing = peek();
-        if (trailing.type() != TokenType.EOF) {
-            throw CalcException.at(CalcErrorCode.PARSE_ERROR,
-                    "表达式在 '" + trailing.lexeme() + "' 处出现多余内容", trailing.position());
-        }
-        return result;
+    public Expression parse(ExpressionText text) {
+        return new ParseRun(text.value()).parseRoot();
     }
 
-    /**
-     * 核心循环：先解析一个一元前缀或基本项，然后不断吸收优先级不低于
-     * minPrecedence 的中缀与后缀算子。
-     *
-     * @param minPrecedence 当前上下文允许吸收的最低优先级；左结合算子递归时
-     *                      传 precedence+1，右结合传 precedence，由此实现结合性
-     */
-    private Expression parseExpression(int minPrecedence) {
-        Expression left = parseUnary();
-        while (true) {
-            Token token = peek();
+    /** 单次解析的运行状态。每次 parse 创建一个，不跨调用共享。 */
+    private static final class ParseRun {
 
-            Optional<Operator> infix = OperatorTable.infix(token.type());
-            if (infix.isPresent() && infix.get().precedence() >= minPrecedence) {
-                Operator op = infix.get();
-                advance();
-                int nextMin = op.associativity() == Associativity.LEFT
-                        ? op.precedence() + 1
-                        : op.precedence();
-                left = new BinaryExpr(op, left, parseExpression(nextMin));
-                continue;
-            }
+        /** 最松的结合层级，作为入口。 */
+        private static final int MIN_PRECEDENCE = 0;
 
-            Optional<Operator> postfix = OperatorTable.postfix(token.type());
-            if (postfix.isPresent() && postfix.get().precedence() >= minPrecedence) {
-                Operator op = postfix.get();
-                advance();
-                left = new PostfixExpr(op, left);
-                continue;
-            }
+        private final List<Token> tokens;
+        private int index;
 
-            return left;
+        ParseRun(String input) {
+            this.tokens = new Lexer(input).tokenize();
         }
-    }
 
-    private Expression parseUnary() {
-        Token token = peek();
-        Optional<Operator> prefix = OperatorTable.prefix(token.type());
-        if (prefix.isPresent()) {
-            Operator op = prefix.get();
-            advance();
-            // 用算子自身优先级作为下界，一元负号(3)因此不会吞掉 ^(4)，得到 -2^2 == -4
-            return new UnaryExpr(op, parseExpression(op.precedence()));
-        }
-        return parsePrimary();
-    }
-
-    private Expression parsePrimary() {
-        Token token = peek();
-        return switch (token.type()) {
-            case NUMBER -> {
-                advance();
-                yield new LiteralExpr(new DecimalNumber(new BigDecimal(token.lexeme())));
+        Expression parseRoot() {
+            Expression result = parseExpression(MIN_PRECEDENCE);
+            Token trailing = peek();
+            if (trailing.type() != TokenType.EOF) {
+                throw CalcException.at(CalcErrorCode.PARSE_ERROR,
+                        "表达式在 '" + trailing.lexeme() + "' 处出现多余内容", trailing.position());
             }
-            case IDENT -> {
-                advance();
-                if (peek().type() == TokenType.LPAREN) {
-                    yield parseCall(token);
+            return result;
+        }
+
+        /**
+         * 核心循环：先解析一个一元前缀或基本项，然后不断吸收优先级不低于
+         * minPrecedence 的中缀与后缀算子。
+         *
+         * @param minPrecedence 当前上下文允许吸收的最低优先级；左结合算子递归时
+         *                      传 precedence+1，右结合传 precedence，由此实现结合性
+         */
+        private Expression parseExpression(int minPrecedence) {
+            Expression left = parseUnary();
+            while (true) {
+                Token token = peek();
+
+                Optional<Operator> infix = OperatorTable.infix(token.type());
+                if (infix.isPresent() && infix.get().precedence() >= minPrecedence) {
+                    Operator op = infix.get();
+                    advance();
+                    int nextMin = op.associativity() == Associativity.LEFT
+                            ? op.precedence() + 1
+                            : op.precedence();
+                    left = new BinaryExpr(op, left, parseExpression(nextMin));
+                    continue;
                 }
-                yield new VariableExpr(token.lexeme(), token.position());
-            }
-            case LPAREN -> {
-                advance();
-                Expression inner = parseExpression(MIN_PRECEDENCE);
-                expect(TokenType.RPAREN, "缺少右括号");
-                yield inner;
-            }
-            default -> throw CalcException.at(CalcErrorCode.PARSE_ERROR,
-                    "表达式不完整或出现意外符号 '" + token.lexeme() + "'", token.position());
-        };
-    }
 
-    private Expression parseCall(Token nameToken) {
-        expect(TokenType.LPAREN, "函数调用缺少左括号");
-        List<Expression> arguments = new ArrayList<>();
-        if (peek().type() != TokenType.RPAREN) {
-            arguments.add(parseExpression(MIN_PRECEDENCE));
-            while (peek().type() == TokenType.COMMA) {
+                Optional<Operator> postfix = OperatorTable.postfix(token.type());
+                if (postfix.isPresent() && postfix.get().precedence() >= minPrecedence) {
+                    Operator op = postfix.get();
+                    advance();
+                    left = new PostfixExpr(op, left);
+                    continue;
+                }
+
+                return left;
+            }
+        }
+
+        private Expression parseUnary() {
+            Token token = peek();
+            Optional<Operator> prefix = OperatorTable.prefix(token.type());
+            if (prefix.isPresent()) {
+                Operator op = prefix.get();
                 advance();
+                // 用算子自身优先级作为下界：一元负号(3)因此不会吞掉 ^(4)，得到 -2^2 == -4
+                return new UnaryExpr(op, parseExpression(op.precedence()));
+            }
+            return parsePrimary();
+        }
+
+        private Expression parsePrimary() {
+            Token token = peek();
+            return switch (token.type()) {
+                case NUMBER -> {
+                    advance();
+                    yield new LiteralExpr(new DecimalNumber(new BigDecimal(token.lexeme())));
+                }
+                case IDENT -> {
+                    advance();
+                    if (peek().type() == TokenType.LPAREN) {
+                        yield parseCall(token);
+                    }
+                    yield new VariableExpr(token.lexeme(), token.position());
+                }
+                case LPAREN -> {
+                    advance();
+                    Expression inner = parseExpression(MIN_PRECEDENCE);
+                    expect(TokenType.RPAREN, "缺少右括号");
+                    yield inner;
+                }
+                default -> throw CalcException.at(CalcErrorCode.PARSE_ERROR,
+                        "表达式不完整或出现意外符号 '" + token.lexeme() + "'", token.position());
+            };
+        }
+
+        private Expression parseCall(Token nameToken) {
+            expect(TokenType.LPAREN, "函数调用缺少左括号");
+            List<Expression> arguments = new ArrayList<>();
+            if (peek().type() != TokenType.RPAREN) {
                 arguments.add(parseExpression(MIN_PRECEDENCE));
+                while (peek().type() == TokenType.COMMA) {
+                    advance();
+                    arguments.add(parseExpression(MIN_PRECEDENCE));
+                }
             }
+            expect(TokenType.RPAREN, "函数调用 " + nameToken.lexeme() + " 缺少右括号");
+            return new CallExpr(nameToken.lexeme(), arguments, nameToken.position());
         }
-        expect(TokenType.RPAREN, "函数调用 " + nameToken.lexeme() + " 缺少右括号");
-        return new CallExpr(nameToken.lexeme(), arguments, nameToken.position());
-    }
 
-    private void expect(TokenType expected, String message) {
-        Token token = peek();
-        if (token.type() != expected) {
-            throw CalcException.at(CalcErrorCode.PARSE_ERROR, message, token.position());
+        private void expect(TokenType expected, String message) {
+            Token token = peek();
+            if (token.type() != expected) {
+                throw CalcException.at(CalcErrorCode.PARSE_ERROR, message, token.position());
+            }
+            advance();
         }
-        advance();
-    }
 
-    private Token peek() {
-        return tokens.get(index);
-    }
+        private Token peek() {
+            return tokens.get(index);
+        }
 
-    private void advance() {
-        index++;
+        private void advance() {
+            index++;
+        }
     }
 }
 ```
@@ -2061,88 +2228,151 @@ public final class ExpressionParser {
 
 运行：`mvn -q test -Dtest=ExpressionParserTest`
 
-预期：22 个测试全部 PASS。
+预期：全部 PASS（27 个）。
 
-**若 `powerIsRightAssociative` 失败**：检查 `parseExpression` 中 `nextMin` 的计算——右结合必须传 `op.precedence()` 而非 `+1`。
+**若 `powerIsRightAssociative` 失败**：检查 `parseExpression` 中 `nextMin` 的计算 —— 右结合必须传 `op.precedence()` 而非 `+1`。
 
 **若 `unaryMinusBindsLooserThanPower` 失败**：检查 `parseUnary` 是否用 `parseExpression(op.precedence())` 而非 `parseExpression(MIN_PRECEDENCE)`。
+
+**若 `parserIsStatelessAndSafeForConcurrentUse` 失败**：说明 `tokens` / `index` 泄漏到了 `ExpressionParser` 实例字段上，把它们移回 `ParseRun`。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/parser/ \
-        src/test/java/com/wysjwxm/calculator/core/parser/
-git commit -m "feat: AST 与优先级爬升解析器，优先级由 OperatorTable 驱动"
+git add src/main/java/com/wysjwxm/calculator/domain/model/expression/ \
+        src/test/java/com/wysjwxm/calculator/domain/model/expression/
+git commit -m "feat: 表达式 AST 与无状态优先级爬升解析器，含并发安全测试"
 ```
 
 ---
 
-### Task 7: 变量与函数注册表
+### Task 7: 函数值对象与保留名
+
+**注意**：接口方法必须叫 `functionName()` —— 枚举无法覆写 `Enum.name()`（spec §4.3）。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/Constants.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/function/MathFunction.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/function/UnaryFunction.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/function/BinaryFunction.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/function/FunctionRegistry.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/ConstantsTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/function/FunctionRegistryTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/MathematicalConstant.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/MathFunction.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/UnaryFunction.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/BinaryFunction.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/AngleUnits.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/FunctionRegistry.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/function/ReservedNames.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/MathematicalConstantTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/function/FunctionRegistryTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/function/ReservedNamesTest.java`
 
 **Interfaces:**
 - Consumes: `AngleUnit`（Task 1）、`CalcNumber`、`Numbers`（Task 3）、`CalcErrorCode`、`CalcException`（Task 2）
 - Produces:
-  - `Constants`：静态方法 `Optional<CalcNumber> lookup(String name)`、`Set<String> names()`、`boolean isReserved(String name)`
-  - `interface MathFunction`：`String name()`、`int arity()`、`boolean angleSensitive()`、`CalcNumber apply(List<CalcNumber> args, AngleUnit angleUnit, Numbers numbers)`
+  - `enum MathematicalConstant { PI, E }`：`String symbol()`、`CalcNumber value()`、静态 `Optional<CalcNumber> lookup(String)`、静态 `Set<String> names()`
+  - `interface MathFunction`：`String functionName()`、`int arity()`、`boolean angleSensitive()`、`CalcNumber apply(List<CalcNumber> args, AngleUnit angleUnit, Numbers numbers)`
   - `enum UnaryFunction implements MathFunction`（23 个）、`enum BinaryFunction implements MathFunction`（5 个）
-  - `FunctionRegistry`：构造器 `FunctionRegistry()`，方法 `Optional<MathFunction> find(String name)`、`Set<String> names()`、`List<String> unaryNames()`、`List<String> binaryNames()`、`Set<String> reservedNames()`（**函数名 ∪ 常量名**，供变量名校验复用）
+  - `FunctionRegistry`：`Optional<MathFunction> find(String)`、`List<String> unaryNames()`、`List<String> binaryNames()`
+  - `ReservedNames`：`static ReservedNames standard()`、`boolean contains(String)`、`Set<String> values()`
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/ConstantsTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/MathematicalConstantTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core;
+package com.wysjwxm.calculator.domain;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class ConstantsTest {
+class MathematicalConstantTest {
 
     @Test
     void resolvesPiAndE() {
-        assertThat(Constants.lookup("pi").orElseThrow().toDouble())
+        assertThat(MathematicalConstant.lookup("pi").orElseThrow().toDouble())
                 .isCloseTo(Math.PI, org.assertj.core.data.Offset.offset(1e-15));
-        assertThat(Constants.lookup("e").orElseThrow().toDouble())
+        assertThat(MathematicalConstant.lookup("e").orElseThrow().toDouble())
                 .isCloseTo(Math.E, org.assertj.core.data.Offset.offset(1e-15));
     }
 
     @Test
     void unknownNameIsNotFound() {
-        assertThat(Constants.lookup("x")).isEmpty();
+        assertThat(MathematicalConstant.lookup("x")).isEmpty();
     }
 
     @Test
-    void namesAreReserved() {
-        assertThat(Constants.names()).containsExactlyInAnyOrder("pi", "e");
-        assertThat(Constants.isReserved("pi")).isTrue();
-        assertThat(Constants.isReserved("x")).isFalse();
+    void namesAreExactlyPiAndE() {
+        assertThat(MathematicalConstant.names()).containsExactlyInAnyOrder("pi", "e");
+    }
+
+    @Test
+    void symbolIsTheLowerCaseNameNotTheEnumIdentifier() {
+        // Enum.name() 会返回 "PI"；语言里的常量名是小写 "pi"
+        assertThat(MathematicalConstant.PI.symbol()).isEqualTo("pi");
+        assertThat(MathematicalConstant.E.symbol()).isEqualTo("e");
     }
 }
 ```
 
-创建 `src/test/java/com/wysjwxm/calculator/core/function/FunctionRegistryTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/function/ReservedNamesTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.function;
+package com.wysjwxm.calculator.domain.model.function;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+class ReservedNamesTest {
+
+    @Test
+    void containsAllFunctionNamesAndConstants() {
+        ReservedNames reserved = ReservedNames.standard();
+        assertThat(reserved.contains("sin")).isTrue();
+        assertThat(reserved.contains("sqrt")).isTrue();
+        assertThat(reserved.contains("hypot")).isTrue();
+        assertThat(reserved.contains("pi")).isTrue();
+        assertThat(reserved.contains("e")).isTrue();
+    }
+
+    @Test
+    void doesNotContainOrdinaryNames() {
+        assertThat(ReservedNames.standard().contains("x")).isFalse();
+        assertThat(ReservedNames.standard().contains("x_1")).isFalse();
+        assertThat(ReservedNames.standard().contains("foo")).isFalse();
+    }
+
+    @Test
+    void doesNotAdvertiseRedundantFunctionSpellings() {
+        // 有中缀/后缀写法的运算不注册函数形式（spec §12 D3）
+        ReservedNames reserved = ReservedNames.standard();
+        assertThat(reserved.contains("pow")).isFalse();
+        assertThat(reserved.contains("mod")).isFalse();
+        assertThat(reserved.contains("fact")).isFalse();
+    }
+
+    @Test
+    void sizeIsTwentyEightFunctionsPlusTwoConstants() {
+        assertThat(ReservedNames.standard().values()).hasSize(23 + 5 + 2);
+    }
+
+    @Test
+    void standardIsAStableSingleton() {
+        assertThat(ReservedNames.standard()).isSameAs(ReservedNames.standard());
+    }
+}
+```
+
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/function/FunctionRegistryTest.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.function;
+
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import org.junit.jupiter.api.Test;
+
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2154,7 +2384,7 @@ class FunctionRegistryTest {
     private final Numbers numbers = new Numbers(34);
 
     private CalcNumber apply(String name, AngleUnit unit, double... args) {
-        List<CalcNumber> values = java.util.Arrays.stream(args).mapToObj(numbers::of).toList();
+        List<CalcNumber> values = Arrays.stream(args).mapToObj(numbers::floating).toList();
         return registry.find(name).orElseThrow().apply(values, unit, numbers);
     }
 
@@ -2165,8 +2395,14 @@ class FunctionRegistryTest {
     }
 
     @Test
+    void functionNameIsTheLanguageNameNotTheEnumIdentifier() {
+        assertThat(registry.find("log10").orElseThrow().functionName()).isEqualTo("log10");
+        assertThat(registry.find("log2").orElseThrow().functionName()).isEqualTo("log2");
+        assertThat(registry.find("atan2").orElseThrow().functionName()).isEqualTo("atan2");
+    }
+
+    @Test
     void doesNotRegisterRedundantFunctionSpellings() {
-        // spec §12 D3：有中缀/后缀写法的运算不提供函数形式
         assertThat(registry.find("pow")).isEmpty();
         assertThat(registry.find("mod")).isEmpty();
         assertThat(registry.find("fact")).isEmpty();
@@ -2177,12 +2413,14 @@ class FunctionRegistryTest {
         assertThat(registry.find("nope")).isEmpty();
     }
 
+    // ---------- 角度单位 ----------
+
     @Test
     void degreeAndRadianGiveDifferentSineResults() {
-        assertThat(apply("sin", AngleUnit.DEGREE, 30).toDouble()).isCloseTo(0.5,
-                org.assertj.core.data.Offset.offset(1e-12));
-        assertThat(apply("sin", AngleUnit.RADIAN, 30).toDouble()).isCloseTo(Math.sin(30),
-                org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("sin", AngleUnit.DEGREE, 30).toDouble())
+                .isCloseTo(0.5, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("sin", AngleUnit.RADIAN, 30).toDouble())
+                .isCloseTo(Math.sin(30), org.assertj.core.data.Offset.offset(1e-12));
     }
 
     @Test
@@ -2193,25 +2431,27 @@ class FunctionRegistryTest {
 
     @Test
     void inverseTrigRespectsAngleUnit() {
-        assertThat(apply("asin", AngleUnit.DEGREE, 0.5).toDouble()).isCloseTo(30.0,
-                org.assertj.core.data.Offset.offset(1e-9));
-        assertThat(apply("asin", AngleUnit.RADIAN, 0.5).toDouble()).isCloseTo(Math.asin(0.5),
-                org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("asin", AngleUnit.DEGREE, 0.5).toDouble())
+                .isCloseTo(30.0, org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(apply("asin", AngleUnit.RADIAN, 0.5).toDouble())
+                .isCloseTo(Math.asin(0.5), org.assertj.core.data.Offset.offset(1e-12));
     }
 
     @Test
     void atan2RespectsAngleUnit() {
-        assertThat(apply("atan2", AngleUnit.DEGREE, 1, 1).toDouble()).isCloseTo(45.0,
-                org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(apply("atan2", AngleUnit.DEGREE, 1, 1).toDouble())
+                .isCloseTo(45.0, org.assertj.core.data.Offset.offset(1e-9));
     }
+
+    // ---------- 各函数 ----------
 
     @Test
     void binaryFunctionsWork() {
         assertThat(apply("hypot", AngleUnit.RADIAN, 3, 4).toDouble()).isEqualTo(5.0);
         assertThat(apply("max", AngleUnit.RADIAN, 3, 4).toDouble()).isEqualTo(4.0);
         assertThat(apply("min", AngleUnit.RADIAN, 3, 4).toDouble()).isEqualTo(3.0);
-        assertThat(apply("log", AngleUnit.RADIAN, 8, 2).toDouble()).isCloseTo(3.0,
-                org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("log", AngleUnit.RADIAN, 8, 2).toDouble())
+                .isCloseTo(3.0, org.assertj.core.data.Offset.offset(1e-12));
     }
 
     @Test
@@ -2223,12 +2463,16 @@ class FunctionRegistryTest {
         assertThat(apply("sign", AngleUnit.RADIAN, -9).toDouble()).isEqualTo(-1.0);
         assertThat(apply("exp", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(1.0);
         assertThat(apply("ln", AngleUnit.RADIAN, 1).toDouble()).isEqualTo(0.0);
-        assertThat(apply("log10", AngleUnit.RADIAN, 100).toDouble()).isCloseTo(2.0,
-                org.assertj.core.data.Offset.offset(1e-12));
-        assertThat(apply("log2", AngleUnit.RADIAN, 8).toDouble()).isCloseTo(3.0,
-                org.assertj.core.data.Offset.offset(1e-12));
-        assertThat(apply("cbrt", AngleUnit.RADIAN, 27).toDouble()).isCloseTo(3.0,
-                org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("log10", AngleUnit.RADIAN, 100).toDouble())
+                .isCloseTo(2.0, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("log2", AngleUnit.RADIAN, 8).toDouble())
+                .isCloseTo(3.0, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("cbrt", AngleUnit.RADIAN, 27).toDouble())
+                .isCloseTo(3.0, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(apply("cos", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(1.0);
+        assertThat(apply("tanh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(0.0);
+        assertThat(apply("asinh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(0.0);
+        assertThat(apply("cosh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(1.0);
     }
 
     // ---------- 定义域 ----------
@@ -2261,7 +2505,7 @@ class FunctionRegistryTest {
     }
 
     @Test
-    void asinOutOfRangeIsDomainError() {
+    void asinAndAcosOutOfRangeAreDomainErrors() {
         assertDomainError("asin", 2);
         assertDomainError("acos", -2);
     }
@@ -2277,10 +2521,16 @@ class FunctionRegistryTest {
         assertDomainError("atanh", -1);
     }
 
+    @Test
+    void atanhBoundariesAreAccepted() {
+        assertThat(apply("atanh", AngleUnit.RADIAN, 0.5).toDouble())
+                .isCloseTo(Math.atanh(0.5), org.assertj.core.data.Offset.offset(1e-12));
+    }
+
     // ---------- 元数 ----------
 
     @Test
-    void wrongArityThrows() {
+    void unaryFunctionRejectsWrongArity() {
         assertThatThrownBy(() -> registry.find("sin").orElseThrow()
                 .apply(List.of(numbers.of(1L), numbers.of(2L)), AngleUnit.RADIAN, numbers))
                 .isInstanceOf(CalcException.class)
@@ -2288,34 +2538,44 @@ class FunctionRegistryTest {
                 .isEqualTo(CalcErrorCode.INVALID_REQUEST);
     }
 
-    // ---------- 保留名 ----------
+    @Test
+    void binaryFunctionRejectsWrongArity() {
+        assertThatThrownBy(() -> registry.find("hypot").orElseThrow()
+                .apply(List.of(numbers.of(1L)), AngleUnit.RADIAN, numbers))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
 
     @Test
-    void reservedNamesIncludeFunctionsAndConstants() {
-        assertThat(registry.reservedNames()).contains("sin", "sqrt", "log", "pi", "e");
-        assertThat(registry.reservedNames()).doesNotContain("x");
+    void angleSensitivityFlagsAreCorrect() {
+        assertThat(registry.find("sin").orElseThrow().angleSensitive()).isTrue();
+        assertThat(registry.find("atan2").orElseThrow().angleSensitive()).isTrue();
+        assertThat(registry.find("sqrt").orElseThrow().angleSensitive()).isFalse();
+        assertThat(registry.find("log").orElseThrow().angleSensitive()).isFalse();
+        assertThat(registry.find("sinh").orElseThrow().angleSensitive()).isFalse();
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: 运行确认失败**
 
-运行：`mvn -q test -Dtest='ConstantsTest,FunctionRegistryTest'`
+运行：`mvn -q test -Dtest='MathematicalConstantTest,ReservedNamesTest,FunctionRegistryTest'`
 
-预期：编译失败，`Constants` / `FunctionRegistry` 不存在。
+预期：编译失败，相关类不存在。
 
-- [ ] **Step 3: 创建 Constants**
+- [ ] **Step 3: 创建 MathematicalConstant**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/Constants.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/MathematicalConstant.java`：
 
 ```java
-package com.wysjwxm.calculator.core;
+package com.wysjwxm.calculator.domain;
 
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.FloatingNumber;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.FloatingNumber;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 
@@ -2324,78 +2584,127 @@ import java.util.Set;
  *
  * <p>这些名字属于语言的一部分，不是可被覆盖的缺省值 —— 用户变量不得使用它们
  * （见 spec §6.4）。若允许 pi = 3，则 sin(pi) 的含义会随写入操作静默改变。
+ *
+ * <p>用枚举而非 Map：常量集是编译期固定的，枚举让这一点显式，也让
+ * {@link #names()} 可以静态求值，无需任何运行时容器。
  */
-public final class Constants {
+public enum MathematicalConstant {
 
-    private static final Map<String, CalcNumber> VALUES = new LinkedHashMap<>();
+    PI("pi", Math.PI),
+    E("e", Math.E);
 
-    static {
-        VALUES.put("pi", new FloatingNumber(Math.PI));
-        VALUES.put("e", new FloatingNumber(Math.E));
+    private final String symbol;
+    private final double rawValue;
+
+    MathematicalConstant(String symbol, double rawValue) {
+        this.symbol = symbol;
+        this.rawValue = rawValue;
     }
 
-    private Constants() {
+    /** 语言中的常量名（小写）。注意不能用 {@code name()} —— 那会返回枚举标识符 "PI"。 */
+    public String symbol() {
+        return symbol;
+    }
+
+    public CalcNumber value() {
+        return new FloatingNumber(rawValue);
     }
 
     public static Optional<CalcNumber> lookup(String name) {
-        return Optional.ofNullable(VALUES.get(name));
+        for (MathematicalConstant constant : values()) {
+            if (constant.symbol.equals(name)) {
+                return Optional.of(constant.value());
+            }
+        }
+        return Optional.empty();
     }
 
     public static Set<String> names() {
-        return VALUES.keySet();
-    }
-
-    public static boolean isReserved(String name) {
-        return VALUES.containsKey(name);
+        Set<String> names = new LinkedHashSet<>();
+        Arrays.stream(values()).forEach(c -> names.add(c.symbol));
+        return Set.copyOf(names);
     }
 }
 ```
 
 - [ ] **Step 4: 创建 MathFunction 接口**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/function/MathFunction.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/MathFunction.java`：
 
 ```java
-package com.wysjwxm.calculator.core.function;
+package com.wysjwxm.calculator.domain.model.function;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 
 import java.util.List;
 
+/**
+ * 领域函数。
+ *
+ * <p>取值方法刻意叫 {@code functionName()} 而非 {@code name()}：实现类是枚举，
+ * 而 {@link Enum#name()} 是 final 的，无法覆写 —— 声明 {@code String name()}
+ * 会编译失败，即便绕过也会返回枚举标识符（如 "LOG10"）而非语言中的函数名
+ * （"log10"）。见 spec §4.3。
+ */
 public interface MathFunction {
 
-    String name();
+    String functionName();
 
     int arity();
 
-    /** 是否受角度单位影响（三角函数与反三角函数、atan2）。 */
+    /** 是否受角度单位影响（三角函数、反三角函数、atan2）。 */
     boolean angleSensitive();
 
     CalcNumber apply(List<CalcNumber> args, AngleUnit angleUnit, Numbers numbers);
 }
 ```
 
-- [ ] **Step 5: 创建 UnaryFunction**
+- [ ] **Step 5: 创建 AngleUnits 与 UnaryFunction**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/function/UnaryFunction.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/AngleUnits.java`：
 
 ```java
-package com.wysjwxm.calculator.core.function;
+package com.wysjwxm.calculator.domain.model.function;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
+import com.wysjwxm.calculator.domain.AngleUnit;
+
+/**
+ * 角度单位换算。仅三角相关函数使用。
+ */
+final class AngleUnits {
+
+    private AngleUnits() {
+    }
+
+    static double toRadians(double x, AngleUnit unit) {
+        return unit == AngleUnit.DEGREE ? Math.toRadians(x) : x;
+    }
+
+    static double fromRadians(double x, AngleUnit unit) {
+        return unit == AngleUnit.DEGREE ? Math.toDegrees(x) : x;
+    }
+}
+```
+
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/UnaryFunction.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.function;
+
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 
 import java.util.List;
 import java.util.function.DoubleUnaryOperator;
 
 /**
- * 23 个一元函数。表驱动而非 23 个类 —— 每个函数的差异只有
- * 名字、角度敏感性、定义域约束、double 实现四件事。
+ * 23 个一元函数。表驱动而非 23 个类 —— 每个函数的差异只有四件事：
+ * 语言名、是否受角度影响、定义域约束、double 实现。
  *
  * <p>定义域违规一律抛 DOMAIN_ERROR，不静默返回 NaN。
  */
@@ -2421,7 +2730,7 @@ public enum UnaryFunction implements MathFunction {
     SQRT("sqrt", false, Domain.NON_NEGATIVE, Math::sqrt),
     CBRT("cbrt", false, Domain.ANY, Math::cbrt),
 
-    // 指数与对数
+    // 取绝对值、指数与对数
     ABS("abs", false, Domain.ANY, Math::abs),
     EXP("exp", false, Domain.ANY, Math::exp),
     LN("ln", false, Domain.POSITIVE, Math::log),
@@ -2439,9 +2748,9 @@ public enum UnaryFunction implements MathFunction {
         ANY,
         NON_NEGATIVE,
         POSITIVE,
-        UNIT_INTERVAL,          // asin / acos： -1 <= x <= 1
-        AT_LEAST_ONE,           // acosh：      x >= 1
-        OPEN_UNIT_INTERVAL      // atanh：      -1 < x < 1
+        UNIT_INTERVAL,        // asin / acos： -1 <= x <= 1
+        AT_LEAST_ONE,         // acosh：      x >= 1
+        OPEN_UNIT_INTERVAL    // atanh：      -1 < x < 1
     }
 
     private final String functionName;
@@ -2458,7 +2767,7 @@ public enum UnaryFunction implements MathFunction {
     }
 
     @Override
-    public String name() {
+    public String functionName() {
         return functionName;
     }
 
@@ -2510,52 +2819,25 @@ public enum UnaryFunction implements MathFunction {
 }
 ```
 
-- [ ] **Step 6: 创建 AngleUnits 辅助类**
+- [ ] **Step 6: 创建 BinaryFunction**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/function/AngleUnits.java`：
-
-```java
-package com.wysjwxm.calculator.core.function;
-
-import com.wysjwxm.calculator.core.AngleUnit;
-
-/**
- * 角度单位换算。仅三角相关函数使用。
- */
-final class AngleUnits {
-
-    private AngleUnits() {
-    }
-
-    static double toRadians(double x, AngleUnit unit) {
-        return unit == AngleUnit.DEGREE ? Math.toRadians(x) : x;
-    }
-
-    static double fromRadians(double x, AngleUnit unit) {
-        return unit == AngleUnit.DEGREE ? Math.toDegrees(x) : x;
-    }
-}
-```
-
-- [ ] **Step 7: 创建 BinaryFunction**
-
-创建 `src/main/java/com/wysjwxm/calculator/core/function/BinaryFunction.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/BinaryFunction.java`：
 
 ```java
-package com.wysjwxm.calculator.core.function;
+package com.wysjwxm.calculator.domain.model.function;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 
 import java.util.List;
 import java.util.function.DoubleBinaryOperator;
 
 /**
- * 5 个二元函数 —— 只收录无法用中缀运算符表达的运算（见 spec §6.5）。
- * 幂与取余有 ^ 与 % 两种中缀写法，因此不在此注册。
+ * 5 个二元函数 —— 只收录无法用中缀运算符表达的运算（spec §6.5）。
+ * 幂与取余已有 ^ 与 % 两种中缀写法，因此不在此注册。
  */
 public enum BinaryFunction implements MathFunction {
 
@@ -2569,14 +2851,15 @@ public enum BinaryFunction implements MathFunction {
     private final boolean angleSensitive;
     private final DoubleBinaryOperator implementation;
 
-    BinaryFunction(String functionName, boolean angleSensitive, DoubleBinaryOperator implementation) {
+    BinaryFunction(String functionName, boolean angleSensitive,
+                   DoubleBinaryOperator implementation) {
         this.functionName = functionName;
         this.angleSensitive = angleSensitive;
         this.implementation = implementation;
     }
 
     @Override
-    public String name() {
+    public String functionName() {
         return functionName;
     }
 
@@ -2602,7 +2885,7 @@ public enum BinaryFunction implements MathFunction {
 
         double raw;
         if (this == ATAN2) {
-            // atan2 的返回值是角度，需要对结果做单位换算（输入 y/x 本身无量纲）
+            // atan2 的返回值是角度，需要按单位换算结果；输入 y/x 本身无量纲
             raw = AngleUnits.fromRadians(Math.atan2(x, y), angleUnit);
         } else {
             raw = implementation.applyAsDouble(x, y);
@@ -2625,25 +2908,21 @@ public enum BinaryFunction implements MathFunction {
 }
 ```
 
-- [ ] **Step 8: 创建 FunctionRegistry**
+- [ ] **Step 7: 创建 FunctionRegistry 与 ReservedNames**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/function/FunctionRegistry.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/FunctionRegistry.java`：
 
 ```java
-package com.wysjwxm.calculator.core.function;
-
-import com.wysjwxm.calculator.core.Constants;
+package com.wysjwxm.calculator.domain.model.function;
 
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 /**
- * 函数名 → 实现的查表，同时是「变量名禁用集合」的来源之一。
+ * 函数名 → 实现的查表。
  */
 public final class FunctionRegistry {
 
@@ -2651,10 +2930,10 @@ public final class FunctionRegistry {
 
     public FunctionRegistry() {
         for (UnaryFunction f : UnaryFunction.values()) {
-            byName.put(f.name(), f);
+            byName.put(f.functionName(), f);
         }
         for (BinaryFunction f : BinaryFunction.values()) {
-            byName.put(f.name(), f);
+            byName.put(f.functionName(), f);
         }
     }
 
@@ -2662,77 +2941,343 @@ public final class FunctionRegistry {
         return Optional.ofNullable(byName.get(name));
     }
 
-    public Set<String> names() {
-        return byName.keySet();
-    }
-
     public List<String> unaryNames() {
-        return Arrays.stream(UnaryFunction.values()).map(UnaryFunction::name).toList();
+        return Arrays.stream(UnaryFunction.values()).map(UnaryFunction::functionName).toList();
     }
 
     public List<String> binaryNames() {
-        return Arrays.stream(BinaryFunction.values()).map(BinaryFunction::name).toList();
-    }
-
-    /**
-     * 变量名禁用集合 = 函数名 ∪ 保留常量名（见 spec §6.4）。
-     * 由本类统一提供，避免校验逻辑在多个入口各写一份。
-     */
-    public Set<String> reservedNames() {
-        Set<String> reserved = new HashSet<>(byName.keySet());
-        reserved.addAll(Constants.names());
-        return Set.copyOf(reserved);
+        return Arrays.stream(BinaryFunction.values()).map(BinaryFunction::functionName).toList();
     }
 }
 ```
 
-- [ ] **Step 9: 运行测试确认通过**
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/function/ReservedNames.java`：
 
-运行：`mvn -q test -Dtest='ConstantsTest,FunctionRegistryTest'`
+```java
+package com.wysjwxm.calculator.domain.model.function;
 
-预期：全部 PASS（ConstantsTest 3 个 + FunctionRegistryTest 15 个）。
+import com.wysjwxm.calculator.domain.MathematicalConstant;
 
-- [ ] **Step 10: 提交**
+import java.util.HashSet;
+import java.util.Set;
+
+/**
+ * 保留名集合 = 函数名 ∪ 保留常量名（spec §6.4）。
+ *
+ * <p>注意它**不依赖 FunctionRegistry 实例**：函数集与常量集都是编译期固定的
+ * 枚举，因此集合可以静态求值。这一点是 VariableName 能把校验完全放进构造器
+ * 的前提 —— 见 spec §12 D13。
+ */
+public record ReservedNames(Set<String> values) {
+
+    private static final ReservedNames STANDARD = new ReservedNames(compute());
+
+    public ReservedNames {
+        values = Set.copyOf(values);
+    }
+
+    public static ReservedNames standard() {
+        return STANDARD;
+    }
+
+    public boolean contains(String name) {
+        return values.contains(name);
+    }
+
+    private static Set<String> compute() {
+        Set<String> names = new HashSet<>();
+        for (UnaryFunction function : UnaryFunction.values()) {
+            names.add(function.functionName());
+        }
+        for (BinaryFunction function : BinaryFunction.values()) {
+            names.add(function.functionName());
+        }
+        names.addAll(MathematicalConstant.names());
+        return names;
+    }
+}
+```
+
+- [ ] **Step 8: 运行测试确认通过**
+
+运行：`mvn -q test -Dtest='MathematicalConstantTest,ReservedNamesTest,FunctionRegistryTest'`
+
+预期：全部 PASS。
+
+**若 `ReservedNames` 抛出 `ExceptionInInitializerError`**：检查静态初始化顺序 —— `STANDARD` 依赖 `compute()`，而 `compute()` 读两个枚举，不应形成环。
+
+- [ ] **Step 9: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/Constants.java \
-        src/main/java/com/wysjwxm/calculator/core/function/ \
-        src/test/java/com/wysjwxm/calculator/core/ConstantsTest.java \
-        src/test/java/com/wysjwxm/calculator/core/function/
-git commit -m "feat: 保留常量与函数注册表（23 一元 + 5 二元），含定义域校验"
+git add src/main/java/com/wysjwxm/calculator/domain/MathematicalConstant.java \
+        src/main/java/com/wysjwxm/calculator/domain/model/function/ \
+        src/test/java/com/wysjwxm/calculator/domain/MathematicalConstantTest.java \
+        src/test/java/com/wysjwxm/calculator/domain/model/function/
+git commit -m "feat: 保留常量、函数值对象（23 一元 + 5 二元）与保留名集合"
 ```
 
 ---
 
-### Task 8: 求值器
+### Task 8: 变量值对象（构造即校验）
+
+**这是 DDD 落地最关键的一环**：保留名不变量由 `VariableName` 的构造器保证，不存在「某个入口忘了校验」的可能。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/core/eval/EvaluationContext.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/eval/Evaluator.java`
-- Create: `src/main/java/com/wysjwxm/calculator/core/eval/AstInspection.java`
-- Test: `src/test/java/com/wysjwxm/calculator/core/eval/EvaluatorTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/variable/VariableName.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/variable/Variable.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/variable/VariableNameTest.java`
 
 **Interfaces:**
-- Consumes: 全部 core 组件（Task 1–7）
+- Consumes: `ReservedNames`（Task 7）、`CalcNumber`（Task 3）、`CalcErrorCode`、`CalcException`（Task 2）
 - Produces:
-  - `@FunctionalInterface interface EvaluationContext`：`Optional<CalcNumber> lookup(String name)`，静态 `EvaluationContext of(Map<String, CalcNumber> variables)`、`EvaluationContext empty()`
-  - `Evaluator`，构造器 `Evaluator(FunctionRegistry registry, Numbers numbers)`，方法 `CalcNumber evaluate(Expression expr, AngleUnit angleUnit, EvaluationContext context)`
-  - `AstInspection.usesAngleSensitiveFunction(Expression expr, FunctionRegistry registry)` → `boolean`（供 Task 11 决定历史记录里 `angleUnit` 是否为 null）
+  - `record VariableName(String value)` —— 紧凑构造器校验：非 null、非空、长度 ≤ 64、匹配 `[A-Za-z_][A-Za-z0-9_]*`、**不在 `ReservedNames.standard()` 内**。全部失败抛 `INVALID_REQUEST`
+  - `record Variable(VariableName name, CalcNumber value, Instant createdAt, Instant updatedAt)`
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/core/eval/EvaluatorTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/variable/VariableNameTest.java`：
 
 ```java
-package com.wysjwxm.calculator.core.eval;
+package com.wysjwxm.calculator.domain.model.variable;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.core.parser.ExpressionParser;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * VariableName 是值对象，校验全在构造器里 —— 不合格的名字造不出对象。
+ * 这些断言即 spec §6.4 保留名规则的可执行形式。
+ */
+class VariableNameTest {
+
+    private void assertInvalidRequest(String name) {
+        assertThatThrownBy(() -> new VariableName(name))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    // ---------- 合法名 ----------
+
+    @Test
+    void acceptsOrdinaryNames() {
+        assertThatCode(() -> new VariableName("x")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("x_1")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("_tmp")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("aVeryLongButLegalName")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("X")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void preservesTheValue() {
+        assertThat(new VariableName("x_1").value()).isEqualTo("x_1");
+    }
+
+    @Test
+    void equalityIsByValue() {
+        assertThat(new VariableName("x")).isEqualTo(new VariableName("x"));
+        assertThat(new VariableName("x")).hasSameHashCodeAs(new VariableName("x"));
+        assertThat(new VariableName("x")).isNotEqualTo(new VariableName("y"));
+    }
+
+    // ---------- 保留常量名 ----------
+
+    @Test
+    void rejectsReservedConstantNames() {
+        assertInvalidRequest("pi");
+        assertInvalidRequest("e");
+    }
+
+    @Test
+    void reservedConstantRejectionMessageNamesTheOffender() {
+        assertThatThrownBy(() -> new VariableName("pi"))
+                .isInstanceOf(CalcException.class)
+                .hasMessageContaining("pi");
+    }
+
+    // ---------- 函数名 ----------
+
+    @Test
+    void rejectsFunctionNames() {
+        assertInvalidRequest("sin");
+        assertInvalidRequest("sqrt");
+        assertInvalidRequest("log");
+        assertInvalidRequest("hypot");
+    }
+
+    @Test
+    void acceptsRedundantSpellingsThatAreNotEvenFunctions() {
+        // pow / mod / fact 从未注册为函数，因此不是保留名 —— 它们是合法的变量名
+        assertThatCode(() -> new VariableName("pow")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("mod")).doesNotThrowAnyException();
+        assertThatCode(() -> new VariableName("fact")).doesNotThrowAnyException();
+    }
+
+    // ---------- 格式 ----------
+
+    @Test
+    void rejectsNamesNotStartingWithLetterOrUnderscore() {
+        assertInvalidRequest("1abc");
+        assertInvalidRequest("9_");
+    }
+
+    @Test
+    void rejectsNamesWithIllegalCharacters() {
+        assertInvalidRequest("a-b");
+        assertInvalidRequest("a b");
+        assertInvalidRequest("a.b");
+        assertInvalidRequest("a+b");
+        assertInvalidRequest("变量");
+    }
+
+    @Test
+    void rejectsEmptyAndNull() {
+        assertInvalidRequest("");
+        assertInvalidRequest(null);
+    }
+
+    // ---------- 长度 ----------
+
+    @Test
+    void rejectsOverlongNames() {
+        assertInvalidRequest("x".repeat(65));
+    }
+
+    @Test
+    void acceptsNameAtExactlyTheLengthLimit() {
+        assertThatCode(() -> new VariableName("x".repeat(64))).doesNotThrowAnyException();
+    }
+}
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+运行：`mvn -q test -Dtest=VariableNameTest`
+
+预期：编译失败，`VariableName` 不存在。
+
+- [ ] **Step 3: 创建 VariableName**
+
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/variable/VariableName.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.variable;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.function.ReservedNames;
+
+import java.util.regex.Pattern;
+
+/**
+ * 变量名的值对象。**构造即校验，无旁路。**
+ *
+ * <p>保留名规则若只放在应用服务的方法里，它就只是「记得调用才生效」的纪律 ——
+ * 漏调一次，{"pi": 3} 就能绕过。做成值对象后，名字在构造时即完成校验，
+ * 下游拿到的键必然合法 —— 不合格的名字根本造不出对象。不变量由类型系统保证，
+ * 而非由调用者的自觉保证。
+ *
+ * <p>校验之所以能完全放在构造器里（不需要领域服务注入保留名集合），是因为
+ * 保留名可通过 {@link ReservedNames#standard()} 静态求得 —— 函数集与常量集
+ * 都是编译期固定的枚举。见 spec §12 D13。
+ */
+public record VariableName(String value) {
+
+    private static final Pattern PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final int MAX_LENGTH = 64;
+
+    public VariableName {
+        if (value == null || value.isEmpty()) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "变量名不能为空");
+        }
+        if (value.length() > MAX_LENGTH) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                    "变量名长度不得超过 " + MAX_LENGTH + "，实际为 " + value.length());
+        }
+        if (!PATTERN.matcher(value).matches()) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                    "变量名必须以字母或下划线开头、仅含字母数字下划线: " + value);
+        }
+        if (ReservedNames.standard().contains(value)) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                    "变量名 " + value + " 是保留名（函数名或内置常量），不可使用");
+        }
+    }
+}
+```
+
+- [ ] **Step 4: 创建 Variable**
+
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/variable/Variable.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.variable;
+
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+
+import java.time.Instant;
+
+/**
+ * 变量实体。身份即 {@link VariableName}（名字变则不是同一个变量），
+ * 带有创建与更新的生命周期。
+ */
+public record Variable(VariableName name, CalcNumber value, Instant createdAt, Instant updatedAt) {
+}
+```
+
+- [ ] **Step 5: 运行测试确认通过**
+
+运行：`mvn -q test -Dtest=VariableNameTest`
+
+预期：14 个测试全部 PASS。
+
+**若 `acceptsRedundantSpellingsThatAreNotEvenFunctions` 失败**：说明 `ReservedNames` 误把 `pow`/`mod`/`fact` 收进了集合 —— 它们从未注册为函数。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add src/main/java/com/wysjwxm/calculator/domain/model/variable/ \
+        src/test/java/com/wysjwxm/calculator/domain/model/variable/
+git commit -m "feat: 变量值对象与实体 — 保留名校验由类型系统保证"
+```
+
+---
+
+### Task 9: 求值器
+
+**Files:**
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/EvaluationContext.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/ExpressionEvaluator.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/AstInspection.java`
+- Test: `src/test/java/com/wysjwxm/calculator/domain/model/expression/eval/ExpressionEvaluatorTest.java`
+
+**Interfaces:**
+- Consumes: 全部上游领域组件
+- Produces:
+  - `@FunctionalInterface interface EvaluationContext`：`Optional<CalcNumber> lookup(String name)`；静态 `EvaluationContext of(Map<String, CalcNumber>)`、`EvaluationContext empty()`
+  - `ExpressionEvaluator(FunctionRegistry registry, Numbers numbers)`，方法 `CalcNumber evaluate(Expression expr, AngleUnit angleUnit, EvaluationContext context)`，访问器 `FunctionRegistry functionRegistry()`
+  - `AstInspection.usesAngleSensitiveFunction(Expression expr, FunctionRegistry registry)` → `boolean`
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `src/test/java/com/wysjwxm/calculator/domain/model/expression/eval/ExpressionEvaluatorTest.java`：
+
+```java
+package com.wysjwxm.calculator.domain.model.expression.eval;
+
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.expression.Expression;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -2741,25 +3286,29 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class EvaluatorTest {
+class ExpressionEvaluatorTest {
 
     private final ExpressionParser parser = new ExpressionParser();
-    private final Evaluator evaluator = new Evaluator(new FunctionRegistry(), new Numbers(34));
+    private final FunctionRegistry registry = new FunctionRegistry();
+    private final ExpressionEvaluator evaluator = new ExpressionEvaluator(registry, new Numbers(34));
 
-    private CalcNumber eval(String expression) {
-        return evaluator.evaluate(parser.parse(expression), AngleUnit.DEGREE, EvaluationContext.empty());
+    private Expression parse(String input) {
+        return parser.parse(new ExpressionText(input));
     }
 
-    private CalcNumber eval(String expression, Map<String, CalcNumber> variables) {
-        return evaluator.evaluate(parser.parse(expression), AngleUnit.DEGREE,
-                EvaluationContext.of(variables));
+    private CalcNumber eval(String input) {
+        return evaluator.evaluate(parse(input), AngleUnit.DEGREE, EvaluationContext.empty());
     }
 
-    private double num(String expression) {
-        return eval(expression).toDouble();
+    private CalcNumber eval(String input, Map<String, CalcNumber> variables) {
+        return evaluator.evaluate(parse(input), AngleUnit.DEGREE, EvaluationContext.of(variables));
     }
 
-    // ---------- 算术与优先级（spec §6.3 三条规则端到端验证） ----------
+    private double num(String input) {
+        return eval(input).toDouble();
+    }
+
+    // ---------- 优先级（spec §6.3 三条规则端到端验证） ----------
 
     @Test
     void arithmeticFollowsPrecedence() {
@@ -2769,29 +3318,23 @@ class EvaluatorTest {
 
     @Test
     void powerIsRightAssociative() {
-        // 2^3^2 == 2^9 == 512，若左结合会得到 64
+        // 2^3^2 == 2^9 == 512；若左结合会得到 64
         assertThat(num("2^3^2")).isEqualTo(512.0);
     }
 
     @Test
     void unaryMinusBindsLooserThanPower() {
-        // -2^2 == -4，而不是 4
         assertThat(num("-2^2")).isEqualTo(-4.0);
     }
 
     @Test
     void factorialBindsTighterThanAddition() {
-        // 3! + 1 == 7
         assertThat(num("3!+1")).isEqualTo(7.0);
     }
 
     @Test
-    void moduloWorks() {
+    void moduloAndUnaryPlusWork() {
         assertThat(num("7%3")).isEqualTo(1.0);
-    }
-
-    @Test
-    void unaryPlusIsIdentity() {
         assertThat(num("+5")).isEqualTo(5.0);
     }
 
@@ -2805,23 +3348,19 @@ class EvaluatorTest {
     }
 
     @Test
-    void sineOfThirtyDegreesIsHalf() {
-        assertThat(num("sin(30)")).isCloseTo(0.5, org.assertj.core.data.Offset.offset(1e-12));
-    }
-
-    @Test
     void specAcceptanceExpression() {
         // spec §14 验收标准第 3 条
-        assertThat(num("1 + 2 * sin(30) ^ 2")).isCloseTo(1.5,
-                org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(num("1 + 2 * sin(30) ^ 2"))
+                .isCloseTo(1.5, org.assertj.core.data.Offset.offset(1e-12));
     }
 
     // ---------- 变量与常量 ----------
 
     @Test
     void resolvesVariablesFromContext() {
-        assertThat(eval("x*2", Map.of("x", new com.wysjwxm.calculator.core.number.DecimalNumber(
-                new BigDecimal("5")))).toDouble()).isEqualTo(10.0);
+        Numbers numbers = new Numbers(34);
+        assertThat(eval("x*2", Map.of("x", numbers.of(new BigDecimal("5")))).toDouble())
+                .isEqualTo(10.0);
     }
 
     @Test
@@ -2831,14 +3370,18 @@ class EvaluatorTest {
     }
 
     @Test
-    void variableShadowsNothingButContextWinsOverConstantsIsImpossible() {
-        // 常量是保留名，变量容器里放不进 pi；此处确认 pi 始终解析为常量
-        assertThat(num("pi + 0")).isCloseTo(Math.PI, org.assertj.core.data.Offset.offset(1e-15));
+    void undefinedVariableThrows() {
+        assertThatThrownBy(() -> eval("y + 1"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.UNKNOWN_VARIABLE);
     }
 
     @Test
-    void undefinedVariableThrows() {
-        assertThatThrownBy(() -> eval("y + 1"))
+    void variableNameThatLooksLikeAFunctionIsReportedAsUnknownVariable() {
+        // sin(sin) 里的内层 sin 是裸标识符。它必须是 UNKNOWN_VARIABLE（求值期的
+        // 未定义），而不是 INVALID_REQUEST —— 求值器按字符串查表，不做名字构造。
+        assertThatThrownBy(() -> eval("sin(sin)"))
                 .isInstanceOf(CalcException.class)
                 .extracting(e -> ((CalcException) e).code())
                 .isEqualTo(CalcErrorCode.UNKNOWN_VARIABLE);
@@ -2852,6 +3395,7 @@ class EvaluatorTest {
         assertThat(num("max(3,4)")).isEqualTo(4.0);
         assertThat(num("log(8,2)")).isCloseTo(3.0, org.assertj.core.data.Offset.offset(1e-12));
         assertThat(num("abs(-3)")).isEqualTo(3.0);
+        assertThat(num("sqrt(sqrt(16))")).isEqualTo(2.0);
     }
 
     @Test
@@ -2863,20 +3407,24 @@ class EvaluatorTest {
     }
 
     @Test
-    void nestedCallsEvaluate() {
-        assertThat(num("sqrt(sqrt(16))")).isEqualTo(2.0);
+    void wrongArityThrowsInvalidRequest() {
+        assertThatThrownBy(() -> eval("sin(1,2)"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
     }
 
     // ---------- 角度单位 ----------
 
     @Test
     void radianModeChangesTrigResults() {
-        CalcNumber radian = evaluator.evaluate(parser.parse("sin(30)"), AngleUnit.RADIAN,
+        CalcNumber radian = evaluator.evaluate(parse("sin(30)"), AngleUnit.RADIAN,
                 EvaluationContext.empty());
-        assertThat(radian.toDouble()).isCloseTo(Math.sin(30), org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(radian.toDouble())
+                .isCloseTo(Math.sin(30), org.assertj.core.data.Offset.offset(1e-12));
     }
 
-    // ---------- 定义域与异常 ----------
+    // ---------- 错误传播 ----------
 
     @Test
     void divisionByZeroThrows() {
@@ -2895,7 +3443,7 @@ class EvaluatorTest {
     }
 
     @Test
-    void overflowThrowsNonFinite() {
+    void overflowingPowerIsRejectedNotSilentlyInfinite() {
         assertThatThrownBy(() -> eval("9^9^9"))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> assertThat(((CalcException) e).code())
@@ -2906,37 +3454,46 @@ class EvaluatorTest {
 
     @Test
     void detectsAngleSensitiveUsage() {
-        FunctionRegistry registry = new FunctionRegistry();
-        assertThat(AstInspection.usesAngleSensitiveFunction(parser.parse("sin(30)"), registry)).isTrue();
-        assertThat(AstInspection.usesAngleSensitiveFunction(parser.parse("1+2"), registry)).isFalse();
-        assertThat(AstInspection.usesAngleSensitiveFunction(parser.parse("sqrt(2)"), registry)).isFalse();
-        assertThat(AstInspection.usesAngleSensitiveFunction(parser.parse("1+sin(2)"), registry)).isTrue();
-        assertThat(AstInspection.usesAngleSensitiveFunction(parser.parse("max(sin(1),2)"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("sin(30)"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("1+2"), registry)).isFalse();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("sqrt(2)"), registry)).isFalse();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("1+sin(2)"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("max(sin(1),2)"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("-sin(1)"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("sin(1)!"), registry)).isTrue();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("hypot(1,2)"), registry)).isFalse();
+        assertThat(AstInspection.usesAngleSensitiveFunction(parse("atan2(1,2)"), registry)).isTrue();
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: 运行确认失败**
 
-运行：`mvn -q test -Dtest=EvaluatorTest`
+运行：`mvn -q test -Dtest=ExpressionEvaluatorTest`
 
-预期：编译失败，`Evaluator` 不存在。
+预期：编译失败，`ExpressionEvaluator` 不存在。
 
 - [ ] **Step 3: 创建 EvaluationContext**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/eval/EvaluationContext.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/EvaluationContext.java`：
 
 ```java
-package com.wysjwxm.calculator.core.eval;
+package com.wysjwxm.calculator.domain.model.expression.eval;
 
-import com.wysjwxm.calculator.core.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.util.Map;
 import java.util.Optional;
 
 /**
- * 求值期的变量来源。core 通过这个接口拿到变量，从而不必认识 store 层 ——
+ * 求值期的变量来源。领域通过这个接口拿到变量，从而不必认识聚合根 ——
  * 依赖方向因此保持单向。
+ *
+ * <p>按**原始字符串**查找而非 {@code VariableName}：表达式里的标识符是任意
+ * 词法单元，求值器不应因为 "sin(sin)" 里的内层 sin 而构造一个名字值对象
+ * （那会抛出 INVALID_REQUEST，而正确的语义是 UNKNOWN_VARIABLE）。集合里的
+ * 键在写入时已经过 VariableName 校验，因此这里按字符串查到的东西，
+ * 必然是合法定义过的。
  */
 @FunctionalInterface
 public interface EvaluationContext {
@@ -2954,47 +3511,51 @@ public interface EvaluationContext {
 }
 ```
 
-- [ ] **Step 4: 创建 Evaluator**
+- [ ] **Step 4: 创建 ExpressionEvaluator**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/eval/Evaluator.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/ExpressionEvaluator.java`：
 
 ```java
-package com.wysjwxm.calculator.core.eval;
+package com.wysjwxm.calculator.domain.model.expression.eval;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.Constants;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.function.MathFunction;
-import com.wysjwxm.calculator.core.lexer.TokenType;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.core.parser.ast.BinaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.CallExpr;
-import com.wysjwxm.calculator.core.parser.ast.Expression;
-import com.wysjwxm.calculator.core.parser.ast.LiteralExpr;
-import com.wysjwxm.calculator.core.parser.ast.PostfixExpr;
-import com.wysjwxm.calculator.core.parser.ast.UnaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.VariableExpr;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.MathematicalConstant;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.expression.BinaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.CallExpr;
+import com.wysjwxm.calculator.domain.model.expression.Expression;
+import com.wysjwxm.calculator.domain.model.expression.LiteralExpr;
+import com.wysjwxm.calculator.domain.model.expression.PostfixExpr;
+import com.wysjwxm.calculator.domain.model.expression.UnaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.VariableExpr;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.function.MathFunction;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * AST → CalcNumber。
+ * 表达式 → CalcNumber 的领域服务。
  *
- * <p>sealed 的 Expression 让这个 switch 穷尽 —— 日后新增节点类型时，
- * 编译器会强制这里同步更新，不会有节点被静默漏掉。
+ * <p>sealed 的 Expression 让这个 switch 穷尽 —— 日后新增节点类型时编译器会
+ * 强制这里同步更新，不会有节点被静默漏掉。
  */
-public final class Evaluator {
+public final class ExpressionEvaluator {
 
     private final FunctionRegistry functions;
     private final Numbers numbers;
 
-    public Evaluator(FunctionRegistry functions, Numbers numbers) {
+    public ExpressionEvaluator(FunctionRegistry functions, Numbers numbers) {
         this.functions = functions;
         this.numbers = numbers;
+    }
+
+    /** 供用例做 AST 内省（判断是否用到角度敏感函数）。 */
+    public FunctionRegistry functionRegistry() {
+        return functions;
     }
 
     public CalcNumber evaluate(Expression expr, AngleUnit angleUnit, EvaluationContext context) {
@@ -3009,17 +3570,17 @@ public final class Evaluator {
     }
 
     private CalcNumber resolveVariable(VariableExpr variable, EvaluationContext context) {
-        // 变量优先于常量：虽然禁用集合保证了同名不可能发生，这里仍按
-        // 「显式传入 > 语言内置」的直觉顺序解析
+        // 先查用户变量，未命中则查保留常量（spec §6.4）。因两个集合互斥，
+        // 这个顺序不影响结果，但保持与规范文字一致。
         return context.lookup(variable.name())
-                .or(() -> Constants.lookup(variable.name()))
+                .or(() -> MathematicalConstant.lookup(variable.name()))
                 .orElseThrow(() -> CalcException.of(CalcErrorCode.UNKNOWN_VARIABLE,
                         "未定义的变量或常量: " + variable.name()));
     }
 
     private CalcNumber applyUnary(UnaryExpr expr, AngleUnit angleUnit, EvaluationContext context) {
         CalcNumber operand = evaluate(expr.operand(), angleUnit, context);
-        // 一元 +/- ：+ 是恒等，- 是取负
+        // 前缀 + 是恒等，- 是取负
         if (expr.operator().symbol().equals("-")) {
             return numbers.negate(operand);
         }
@@ -3038,7 +3599,7 @@ public final class Evaluator {
     private CalcNumber applyBinary(BinaryExpr expr, AngleUnit angleUnit, EvaluationContext context) {
         CalcNumber left = evaluate(expr.left(), angleUnit, context);
         CalcNumber right = evaluate(expr.right(), angleUnit, context);
-        // 算子分派依据 OperatorTable 记录的中缀符号，避免与 TokenType 二次映射
+        // 分派依据 OperatorTable 记录的中缀符号，避免与 TokenType 二次映射
         String symbol = expr.operator().symbol();
         return switch (symbol) {
             case "+" -> numbers.add(left, right);
@@ -3057,7 +3618,7 @@ public final class Evaluator {
                         "未知的函数: " + call.functionName(), call.position()));
         if (call.arguments().size() != function.arity()) {
             throw CalcException.at(CalcErrorCode.INVALID_REQUEST,
-                    function.name() + " 需要 " + function.arity() + " 个参数，实际收到 "
+                    function.functionName() + " 需要 " + function.arity() + " 个参数，实际收到 "
                             + call.arguments().size() + " 个", call.position());
         }
         List<CalcNumber> args = new ArrayList<>(call.arguments().size());
@@ -3071,19 +3632,19 @@ public final class Evaluator {
 
 - [ ] **Step 5: 创建 AstInspection**
 
-创建 `src/main/java/com/wysjwxm/calculator/core/eval/AstInspection.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/AstInspection.java`：
 
 ```java
-package com.wysjwxm.calculator.core.eval;
+package com.wysjwxm.calculator.domain.model.expression.eval;
 
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.parser.ast.BinaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.CallExpr;
-import com.wysjwxm.calculator.core.parser.ast.Expression;
-import com.wysjwxm.calculator.core.parser.ast.LiteralExpr;
-import com.wysjwxm.calculator.core.parser.ast.PostfixExpr;
-import com.wysjwxm.calculator.core.parser.ast.UnaryExpr;
-import com.wysjwxm.calculator.core.parser.ast.VariableExpr;
+import com.wysjwxm.calculator.domain.model.expression.BinaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.CallExpr;
+import com.wysjwxm.calculator.domain.model.expression.Expression;
+import com.wysjwxm.calculator.domain.model.expression.LiteralExpr;
+import com.wysjwxm.calculator.domain.model.expression.PostfixExpr;
+import com.wysjwxm.calculator.domain.model.expression.UnaryExpr;
+import com.wysjwxm.calculator.domain.model.expression.VariableExpr;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
 
 /**
  * AST 静态内省。目前只用于判断历史记录里的 angleUnit 是否有意义
@@ -3115,13 +3676,13 @@ public final class AstInspection {
 
 - [ ] **Step 6: 运行测试确认通过**
 
-运行：`mvn -q test -Dtest=EvaluatorTest`
+运行：`mvn -q test -Dtest=ExpressionEvaluatorTest`
 
-预期：全部 PASS。
+预期：全部 PASS（18 个）。
 
-**若 `overflowThrowsNonFinite` 因 `9^9^9` 走精确路径抛 `ArithmeticException` 而失败**：检查 `Numbers.power` 中 `pow(intValueExact())` 是否被 `try/catch ArithmeticException` 包住并降级到 double 路径。`9^9^9` 的指数 `9^9 = 387420489` 能被 `intValueExact` 接受，于是 `BigDecimal.pow(387420489)` 会抛 `ArithmeticException`（结果超出可表示范围），必须被捕获并降级。
+**若 `variableNameThatLooksLikeAFunctionIsReportedAsUnknownVariable` 得到 `INVALID_REQUEST`**：说明求值器在查找时构造了 `VariableName` —— 改为按字符串查表（见 `EvaluationContext` 的注释）。
 
-- [ ] **Step 7: 运行全部 core 测试**
+- [ ] **Step 7: 运行全部测试**
 
 运行：`mvn -q test`
 
@@ -3130,329 +3691,47 @@ public final class AstInspection {
 - [ ] **Step 8: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/core/eval/ \
-        src/test/java/com/wysjwxm/calculator/core/eval/
-git commit -m "feat: 求值器与 AST 内省"
+git add src/main/java/com/wysjwxm/calculator/domain/model/expression/eval/ \
+        src/test/java/com/wysjwxm/calculator/domain/model/expression/eval/
+git commit -m "feat: 求值器领域服务与 AST 内省"
 ```
 
 ---
 
-### Task 9: 变量存储
+### Task 10: 计算历史聚合根
+
+聚合根接口在领域层声明，内存实现在基础设施层。**淘汰策略是 FIFO 而非 LRU**（spec §8）。本任务是全项目唯一需要写锁的地方。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/store/VariableRecord.java`
-- Create: `src/main/java/com/wysjwxm/calculator/store/VariableStore.java`
-- Create: `src/main/java/com/wysjwxm/calculator/store/InMemoryVariableStore.java`
-- Test: `src/test/java/com/wysjwxm/calculator/store/InMemoryVariableStoreTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/calculation/Calculation.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/calculation/PageResult.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/calculation/CalculationHistory.java`
+- Create: `src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistory.java`
+- Test: `src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistoryTest.java`
 
 **Interfaces:**
-- Consumes: `CalcNumber`（Task 3）
+- Consumes: `CalcNumber`（Task 3）、`AngleUnit`（Task 1）、`ExpressionText`（Task 4）
 - Produces:
-  - `record VariableRecord(String name, CalcNumber value, Instant createdAt, Instant updatedAt)`
-  - `interface VariableStore`：`VariableRecord put(String name, CalcNumber value)`、`Optional<VariableRecord> find(String name)`、`List<VariableRecord> findAll()`（按 name 升序）、`boolean delete(String name)`、`int size()`
-  - `InMemoryVariableStore implements VariableStore`，无参构造器，标注 `@Repository`（**注意**：`store` 包可以依赖 Spring，只有 `core` 不行）
-
-- [ ] **Step 1: 写失败测试**
-
-创建 `src/test/java/com/wysjwxm/calculator/store/InMemoryVariableStoreTest.java`：
-
-```java
-package com.wysjwxm.calculator.store;
-
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
-import org.junit.jupiter.api.Test;
-
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-class InMemoryVariableStoreTest {
-
-    private final InMemoryVariableStore store = new InMemoryVariableStore();
-    private final Numbers numbers = new Numbers(34);
-
-    private CalcNumber num(String v) {
-        return new DecimalNumber(new BigDecimal(v));
-    }
-
-    @Test
-    void putThenFind() {
-        store.put("x", num("5"));
-        assertThat(store.find("x").orElseThrow().value().toDecimal()).isEqualByComparingTo("5");
-    }
-
-    @Test
-    void unknownNameIsEmpty() {
-        assertThat(store.find("nope")).isEmpty();
-    }
-
-    @Test
-    void putOverwritesAndKeepsCreatedAt() {
-        VariableRecord first = store.put("x", num("5"));
-        VariableRecord second = store.put("x", num("6"));
-        assertThat(second.value().toDecimal()).isEqualByComparingTo("6");
-        assertThat(second.createdAt()).isEqualTo(first.createdAt());
-        assertThat(store.size()).isEqualTo(1);
-    }
-
-    @Test
-    void findAllIsSortedByName() {
-        store.put("zeta", num("1"));
-        store.put("alpha", num("2"));
-        store.put("mid", num("3"));
-        assertThat(store.findAll()).extracting(VariableRecord::name)
-                .containsExactly("alpha", "mid", "zeta");
-    }
-
-    @Test
-    void deleteReportsWhetherAnythingWasRemoved() {
-        store.put("x", num("5"));
-        assertThat(store.delete("x")).isTrue();
-        assertThat(store.delete("x")).isFalse();
-        assertThat(store.find("x")).isEmpty();
-    }
-
-    @Test
-    void concurrentWritesToDistinctKeysAllSurvive() throws Exception {
-        int threads = 8;
-        int perThread = 1000;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(threads);
-
-        for (int t = 0; t < threads; t++) {
-            final int id = t;
-            pool.submit(() -> {
-                try {
-                    start.await();
-                    for (int i = 0; i < perThread; i++) {
-                        store.put("k" + id + "_" + i, num(String.valueOf(i)));
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    done.countDown();
-                }
-            });
-        }
-        start.countDown();
-        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-        pool.shutdown();
-
-        assertThat(store.size()).isEqualTo(threads * perThread);
-    }
-
-    @Test
-    void concurrentOverwritesOfSameKeyLeaveExactlyOneValue() throws Exception {
-        int threads = 8;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(threads);
-
-        for (int t = 0; t < threads; t++) {
-            final int id = t;
-            pool.submit(() -> {
-                try {
-                    start.await();
-                    for (int i = 0; i < 500; i++) {
-                        store.put("shared", num(String.valueOf(id)));
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    done.countDown();
-                }
-            });
-        }
-        start.countDown();
-        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-        pool.shutdown();
-
-        assertThat(store.size()).isEqualTo(1);
-        assertThat(store.find("shared")).isPresent();
-    }
-
-    @Test
-    void findAllIsDefensivelyCopiedAgainstLaterMutation() {
-        store.put("x", num("5"));
-        List<VariableRecord> snapshot = store.findAll();
-        assertThat(snapshot).hasSize(1);
-    }
-}
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-运行：`mvn -q test -Dtest=InMemoryVariableStoreTest`
-
-预期：编译失败，`InMemoryVariableStore` 不存在。
-
-- [ ] **Step 3: 创建记录与接口**
-
-创建 `src/main/java/com/wysjwxm/calculator/store/VariableRecord.java`：
-
-```java
-package com.wysjwxm.calculator.store;
-
-import com.wysjwxm.calculator.core.number.CalcNumber;
-
-import java.time.Instant;
-
-public record VariableRecord(String name, CalcNumber value, Instant createdAt, Instant updatedAt) {
-}
-```
-
-创建 `src/main/java/com/wysjwxm/calculator/store/VariableStore.java`：
-
-```java
-package com.wysjwxm.calculator.store;
-
-import com.wysjwxm.calculator.core.number.CalcNumber;
-
-import java.util.List;
-import java.util.Optional;
-
-/**
- * 变量存储抽象。当前唯一实现是内存版（题目禁止外部存储），
- * 但保留接口让「未来可替换持久化实现」成为真实成立的陈述。
- */
-public interface VariableStore {
-
-    /** 幂等 upsert：已存在则整体替换，createdAt 保持不变。 */
-    VariableRecord put(String name, CalcNumber value);
-
-    Optional<VariableRecord> find(String name);
-
-    /** 按 name 字典序升序返回全部。 */
-    List<VariableRecord> findAll();
-
-    boolean delete(String name);
-
-    int size();
-}
-```
-
-- [ ] **Step 4: 创建 InMemoryVariableStore**
-
-创建 `src/main/java/com/wysjwxm/calculator/store/InMemoryVariableStore.java`：
-
-```java
-package com.wysjwxm.calculator.store;
-
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import org.springframework.stereotype.Repository;
-
-import java.time.Instant;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-
-/**
- * 变量的内存实现。
- *
- * <p>用 ConcurrentHashMap 而非加锁：变量是「按 name 独立」的数据，
- * 单键操作天然原子，无锁读让高频的表达式求值不必等待。
- */
-@Repository
-public class InMemoryVariableStore implements VariableStore {
-
-    private final ConcurrentMap<String, VariableRecord> variables = new ConcurrentHashMap<>();
-
-    @Override
-    public VariableRecord put(String name, CalcNumber value) {
-        Instant now = Instant.now();
-        // compute 让「读旧 createdAt + 写新记录」成为单键原子操作
-        return variables.compute(name, (key, existing) -> new VariableRecord(
-                key,
-                value,
-                existing == null ? now : existing.createdAt(),
-                now));
-    }
-
-    @Override
-    public Optional<VariableRecord> find(String name) {
-        return Optional.ofNullable(variables.get(name));
-    }
-
-    @Override
-    public List<VariableRecord> findAll() {
-        return variables.values().stream()
-                .sorted(Comparator.comparing(VariableRecord::name))
-                .toList();
-    }
-
-    @Override
-    public boolean delete(String name) {
-        return variables.remove(name) != null;
-    }
-
-    @Override
-    public int size() {
-        return variables.size();
-    }
-}
-```
-
-- [ ] **Step 5: 运行测试确认通过**
-
-运行：`mvn -q test -Dtest=InMemoryVariableStoreTest`
-
-预期：8 个测试全部 PASS。
-
-- [ ] **Step 6: 提交**
-
-```bash
-git add src/main/java/com/wysjwxm/calculator/store/VariableRecord.java \
-        src/main/java/com/wysjwxm/calculator/store/VariableStore.java \
-        src/main/java/com/wysjwxm/calculator/store/InMemoryVariableStore.java \
-        src/test/java/com/wysjwxm/calculator/store/InMemoryVariableStoreTest.java
-git commit -m "feat: 变量存储 — ConcurrentHashMap 无锁读的内存实现"
-```
-
----
-
-### Task 10: 历史存储
-
-实现带容量上限的 FIFO 历史。**淘汰策略是 FIFO 而非 LRU**，理由见 spec §8。本任务是全项目唯一需要写锁的地方。
-
-**Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/store/HistoryRecord.java`
-- Create: `src/main/java/com/wysjwxm/calculator/store/PageResult.java`
-- Create: `src/main/java/com/wysjwxm/calculator/store/CalculationHistoryStore.java`
-- Create: `src/main/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStore.java`
-- Test: `src/test/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStoreTest.java`
-
-**Interfaces:**
-- Consumes: `CalcNumber`（Task 3）、`AngleUnit`（Task 1）
-- Produces:
-  - `record HistoryRecord(long id, String expression, CalcNumber result, AngleUnit angleUnit, double elapsedMs, Instant createdAt)`
+  - `record Calculation(long id, ExpressionText expression, CalcNumber result, AngleUnit angleUnit, double elapsedMs, Instant createdAt)`
   - `record PageResult<T>(List<T> items, int page, int size, long totalElements, int totalPages, boolean hasNext)`
-  - `interface CalculationHistoryStore`：`HistoryRecord append(String expression, CalcNumber result, AngleUnit angleUnit, double elapsedMs)`、`Optional<HistoryRecord> find(long id)`、`PageResult<HistoryRecord> findPage(int page, int size)`、`int clear()`、`int size()`
-  - `InMemoryCalculationHistoryStore implements CalculationHistoryStore`，构造器 `InMemoryCalculationHistoryStore(CalculatorProperties properties)`，标注 `@Repository`
+  - `interface CalculationHistory`：`Calculation append(ExpressionText, CalcNumber, AngleUnit, double elapsedMs)`、`Optional<Calculation> find(long id)`、`PageResult<Calculation> page(int page, int size)`、`int clear()`、`int size()`
+  - `InMemoryCalculationHistory implements CalculationHistory`，构造器 `InMemoryCalculationHistory(int capacity)`
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStoreTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistoryTest.java`：
 
 ```java
-package com.wysjwxm.calculator.store;
+package com.wysjwxm.calculator.infrastructure;
 
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.calculation.CalculationHistory;
+import com.wysjwxm.calculator.domain.model.calculation.PageResult;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -3460,84 +3739,97 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class InMemoryCalculationHistoryStoreTest {
+class InMemoryCalculationHistoryTest {
 
     private final Numbers numbers = new Numbers(34);
 
-    private CalculatorProperties props(int capacity) {
-        return new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, capacity);
+    private Calculation append(CalculationHistory history, String expr) {
+        return history.append(new ExpressionText(expr), numbers.of(1L), AngleUnit.DEGREE, 0.5);
     }
 
-    private HistoryRecord append(CalculationHistoryStore store, String expr) {
-        return store.append(expr, numbers.of(1L), AngleUnit.DEGREE, 0.5);
+    private CalculationHistory historyOf(int capacity) {
+        return new InMemoryCalculationHistory(capacity);
     }
+
+    // ---------- 基本行为 ----------
 
     @Test
     void appendAssignsMonotonicIdsStartingAtOne() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        assertThat(append(store, "a").id()).isEqualTo(1L);
-        assertThat(append(store, "b").id()).isEqualTo(2L);
-        assertThat(append(store, "c").id()).isEqualTo(3L);
+        CalculationHistory history = historyOf(100);
+        assertThat(append(history, "1+1").id()).isEqualTo(1L);
+        assertThat(append(history, "2+2").id()).isEqualTo(2L);
+        assertThat(append(history, "3+3").id()).isEqualTo(3L);
     }
 
     @Test
     void findByIdReturnsRecord() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        HistoryRecord appended = append(store, "sin(30)");
-        assertThat(store.find(appended.id())).contains(appended);
+        CalculationHistory history = historyOf(100);
+        Calculation appended = append(history, "sin(30)");
+        assertThat(history.find(appended.id())).contains(appended);
     }
 
     @Test
     void findUnknownIdIsEmpty() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        assertThat(store.find(999L)).isEmpty();
+        assertThat(historyOf(100).find(999L)).isEmpty();
     }
 
     @Test
-    void pageIsNewestFirst() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        append(store, "first");
-        append(store, "second");
-        append(store, "third");
+    void storesExpressionTextAndAngleUnitVerbatim() {
+        CalculationHistory history = historyOf(100);
+        Calculation record = history.append(new ExpressionText("  sin(30)  "),
+                numbers.of(1L), AngleUnit.RADIAN, 1.25);
+        assertThat(record.expression().value()).isEqualTo("sin(30)");
+        assertThat(record.angleUnit()).isEqualTo(AngleUnit.RADIAN);
+        assertThat(record.elapsedMs()).isEqualTo(1.25);
+    }
 
-        PageResult<HistoryRecord> page = store.findPage(0, 10);
-        assertThat(page.items()).extracting(HistoryRecord::expression)
+    // ---------- 分页 ----------
+
+    @Test
+    void pageIsNewestFirst() {
+        CalculationHistory history = historyOf(100);
+        append(history, "first");
+        append(history, "second");
+        append(history, "third");
+
+        assertThat(history.page(0, 10).items())
+                .extracting(c -> c.expression().value())
                 .containsExactly("third", "second", "first");
     }
 
     @Test
     void pagingSlicesCorrectly() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
+        CalculationHistory history = historyOf(100);
         for (int i = 1; i <= 5; i++) {
-            append(store, "e" + i);
+            append(history, "e" + i);
         }
-        PageResult<HistoryRecord> firstPage = store.findPage(0, 2);
-        assertThat(firstPage.items()).extracting(HistoryRecord::expression).containsExactly("e5", "e4");
+        PageResult<Calculation> firstPage = history.page(0, 2);
+        assertThat(firstPage.items()).extracting(c -> c.expression().value())
+                .containsExactly("e5", "e4");
         assertThat(firstPage.page()).isEqualTo(0);
         assertThat(firstPage.size()).isEqualTo(2);
         assertThat(firstPage.totalElements()).isEqualTo(5);
         assertThat(firstPage.totalPages()).isEqualTo(3);
         assertThat(firstPage.hasNext()).isTrue();
 
-        assertThat(store.findPage(2, 2).items()).extracting(HistoryRecord::expression)
-                .containsExactly("e1");
-        assertThat(store.findPage(2, 2).hasNext()).isFalse();
+        PageResult<Calculation> lastPage = history.page(2, 2);
+        assertThat(lastPage.items()).extracting(c -> c.expression().value()).containsExactly("e1");
+        assertThat(lastPage.hasNext()).isFalse();
     }
 
     @Test
     void pageBeyondEndReturnsEmptyItems() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        append(store, "only");
-        PageResult<HistoryRecord> page = store.findPage(5, 10);
+        CalculationHistory history = historyOf(100);
+        append(history, "only");
+        PageResult<Calculation> page = history.page(5, 10);
         assertThat(page.items()).isEmpty();
         assertThat(page.totalElements()).isEqualTo(1);
         assertThat(page.hasNext()).isFalse();
     }
 
     @Test
-    void emptyStorePagesCleanly() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        PageResult<HistoryRecord> page = store.findPage(0, 10);
+    void emptyHistoryPagesCleanly() {
+        PageResult<Calculation> page = historyOf(100).page(0, 10);
         assertThat(page.items()).isEmpty();
         assertThat(page.totalElements()).isZero();
         assertThat(page.totalPages()).isZero();
@@ -3548,131 +3840,96 @@ class InMemoryCalculationHistoryStoreTest {
 
     @Test
     void capacityEvictsOldestFirst() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(3));
-        append(store, "e1");
-        append(store, "e2");
-        append(store, "e3");
-        append(store, "e4");
+        CalculationHistory history = historyOf(3);
+        append(history, "e1");
+        append(history, "e2");
+        append(history, "e3");
+        append(history, "e4");
 
-        assertThat(store.size()).isEqualTo(3);
-        assertThat(store.findPage(0, 10).items()).extracting(HistoryRecord::expression)
+        assertThat(history.size()).isEqualTo(3);
+        assertThat(history.page(0, 10).items()).extracting(c -> c.expression().value())
                 .containsExactly("e4", "e3", "e2");
-        // 最旧的 e1 已被淘汰
-        assertThat(store.find(1L)).isEmpty();
+        assertThat(history.find(1L)).isEmpty();
         // 淘汰不重置 id 序列
-        assertThat(store.findPage(0, 1).items().get(0).id()).isEqualTo(4L);
+        assertThat(history.page(0, 1).items().get(0).id()).isEqualTo(4L);
     }
 
     @Test
     void zeroCapacityMeansUnbounded() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(0));
+        CalculationHistory history = historyOf(0);
         for (int i = 0; i < 50; i++) {
-            append(store, "e" + i);
+            append(history, "e" + i);
         }
-        assertThat(store.size()).isEqualTo(50);
+        assertThat(history.size()).isEqualTo(50);
     }
 
     @Test
     void negativeCapacityMeansUnbounded() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(-1));
+        CalculationHistory history = historyOf(-1);
         for (int i = 0; i < 50; i++) {
-            append(store, "e" + i);
+            append(history, "e" + i);
         }
-        assertThat(store.size()).isEqualTo(50);
+        assertThat(history.size()).isEqualTo(50);
     }
+
+    // ---------- 清空 ----------
 
     @Test
     void clearRemovesEverythingAndReportsCount() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        append(store, "a");
-        append(store, "b");
-        assertThat(store.clear()).isEqualTo(2);
-        assertThat(store.size()).isZero();
-        assertThat(store.findPage(0, 10).totalElements()).isZero();
+        CalculationHistory history = historyOf(100);
+        append(history, "a");
+        append(history, "b");
+        assertThat(history.clear()).isEqualTo(2);
+        assertThat(history.size()).isZero();
+        assertThat(history.page(0, 10).totalElements()).isZero();
     }
 
     @Test
-    void clearOnEmptyStoreReturnsZero() {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(100));
-        assertThat(store.clear()).isZero();
+    void clearOnEmptyHistoryReturnsZero() {
+        assertThat(historyOf(100).clear()).isZero();
     }
 
     // ---------- 并发 ----------
 
     @Test
     void concurrentAppendsNoneLostWhenUnbounded() throws Exception {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(0));
+        CalculationHistory history = historyOf(0);
         int threads = 8;
         int perThread = 1000;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(threads);
+        runConcurrently(threads, () -> {
+            for (int i = 0; i < perThread; i++) {
+                append(history, "x");
+            }
+        });
 
-        for (int t = 0; t < threads; t++) {
-            pool.submit(() -> {
-                try {
-                    start.await();
-                    for (int i = 0; i < perThread; i++) {
-                        append(store, "x");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    done.countDown();
-                }
-            });
-        }
-        start.countDown();
-        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-        pool.shutdown();
-
-        assertThat(store.size()).isEqualTo(threads * perThread);
-        // id 必须唯一且连续 —— 证明 id 分配没有竞态
-        assertThat(store.findPage(0, store.size()).items())
-                .extracting(HistoryRecord::id)
+        assertThat(history.size()).isEqualTo(threads * perThread);
+        // id 必须唯一 —— 证明 id 分配没有竞态
+        assertThat(history.page(0, history.size()).items())
+                .extracting(Calculation::id)
                 .doesNotHaveDuplicates();
     }
 
     @Test
     void concurrentAppendsRespectCapacityExactly() throws Exception {
         int capacity = 500;
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(capacity));
-        int threads = 8;
-        int perThread = 500;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(threads);
-
-        for (int t = 0; t < threads; t++) {
-            pool.submit(() -> {
-                try {
-                    start.await();
-                    for (int i = 0; i < perThread; i++) {
-                        append(store, "x");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    done.countDown();
-                }
-            });
-        }
-        start.countDown();
-        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-        pool.shutdown();
+        CalculationHistory history = historyOf(capacity);
+        runConcurrently(8, () -> {
+            for (int i = 0; i < 500; i++) {
+                append(history, "x");
+            }
+        });
 
         // 「追加 + 淘汰」必须原子，否则并发下 size 会瞬时超过 capacity
-        assertThat(store.size()).isEqualTo(capacity);
+        assertThat(history.size()).isEqualTo(capacity);
     }
 
     @Test
     void concurrentReadsAndWritesDoNotFail() throws Exception {
-        CalculationHistoryStore store = new InMemoryCalculationHistoryStore(props(200));
+        CalculationHistory history = historyOf(200);
         int threads = 8;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(threads);
-
         for (int t = 0; t < threads; t++) {
             final boolean writer = t % 2 == 0;
             pool.submit(() -> {
@@ -3680,9 +3937,9 @@ class InMemoryCalculationHistoryStoreTest {
                     start.await();
                     for (int i = 0; i < 1000; i++) {
                         if (writer) {
-                            append(store, "w");
+                            append(history, "w");
                         } else {
-                            store.findPage(0, 10);
+                            history.page(0, 10);
                         }
                     }
                 } catch (InterruptedException e) {
@@ -3696,41 +3953,65 @@ class InMemoryCalculationHistoryStoreTest {
         assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
         pool.shutdown();
 
-        assertThat(store.size()).isLessThanOrEqualTo(200);
+        assertThat(history.size()).isLessThanOrEqualTo(200);
+    }
+
+    private void runConcurrently(int threads, Runnable body) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    body.run();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        start.countDown();
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: 运行确认失败**
 
-运行：`mvn -q test -Dtest=InMemoryCalculationHistoryStoreTest`
+运行：`mvn -q test -Dtest=InMemoryCalculationHistoryTest`
 
-预期：编译失败，`InMemoryCalculationHistoryStore` 不存在。
+预期：编译失败，`InMemoryCalculationHistory` 不存在。
 
-- [ ] **Step 3: 创建记录与接口**
+- [ ] **Step 3: 创建领域层的三个类型**
 
-创建 `src/main/java/com/wysjwxm/calculator/store/HistoryRecord.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/calculation/Calculation.java`：
 
 ```java
-package com.wysjwxm.calculator.store;
+package com.wysjwxm.calculator.domain.model.calculation;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.time.Instant;
 
 /**
+ * 计算实体。身份是 id。
+ *
  * @param angleUnit 仅当表达式用到了受角度单位影响的函数时才有值，否则为 null
  */
-public record HistoryRecord(long id, String expression, CalcNumber result, AngleUnit angleUnit,
-                            double elapsedMs, Instant createdAt) {
+public record Calculation(long id, ExpressionText expression, CalcNumber result,
+                          AngleUnit angleUnit, double elapsedMs, Instant createdAt) {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/store/PageResult.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/calculation/PageResult.java`：
 
 ```java
-package com.wysjwxm.calculator.store;
+package com.wysjwxm.calculator.domain.model.calculation;
 
 import java.util.List;
 
@@ -3743,24 +4024,32 @@ public record PageResult<T>(List<T> items, int page, int size, long totalElement
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/store/CalculationHistoryStore.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/calculation/CalculationHistory.java`：
 
 ```java
-package com.wysjwxm.calculator.store;
+package com.wysjwxm.calculator.domain.model.calculation;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.util.Optional;
 
-public interface CalculationHistoryStore {
+/**
+ * 计算历史聚合根。
+ *
+ * <p>一致性边界：容量上限。领域层只声明契约，内存实现由基础设施层提供。
+ * 之所以不额外引入 Repository 类型（聚合根与仓储合并），见 spec §12 D11。
+ */
+public interface CalculationHistory {
 
-    HistoryRecord append(String expression, CalcNumber result, AngleUnit angleUnit, double elapsedMs);
+    Calculation append(ExpressionText expression, CalcNumber result, AngleUnit angleUnit,
+                       double elapsedMs);
 
-    Optional<HistoryRecord> find(long id);
+    Optional<Calculation> find(long id);
 
     /** 按 id 倒序（最新在前）分页。 */
-    PageResult<HistoryRecord> findPage(int page, int size);
+    PageResult<Calculation> page(int page, int size);
 
     int clear();
 
@@ -3768,17 +4057,19 @@ public interface CalculationHistoryStore {
 }
 ```
 
-- [ ] **Step 4: 创建 InMemoryCalculationHistoryStore**
+- [ ] **Step 4: 创建 InMemoryCalculationHistory**
 
-创建 `src/main/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStore.java`：
+创建 `src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistory.java`：
 
 ```java
-package com.wysjwxm.calculator.store;
+package com.wysjwxm.calculator.infrastructure;
 
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import org.springframework.stereotype.Repository;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.calculation.CalculationHistory;
+import com.wysjwxm.calculator.domain.model.calculation.PageResult;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -3790,34 +4081,34 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * 历史的内存实现，带容量上限。
+ * 计算历史聚合根的内存实现，带容量上限。
  *
  * <p><b>并发策略</b>：ArrayDeque + ReentrantReadWriteLock。用锁而非并发集合，
- * 是因为「追加 + 淘汰最旧」必须是一个原子步骤 —— ConcurrentLinkedDeque 无法
- * 保证淘汰后 size 精确等于容量。
+ * 是因为「追加 + 淘汰最旧」必须是一个原子步骤 —— 无锁的并发双端队列无法保证
+ * 淘汰后 size 精确等于容量。
  *
- * <p><b>淘汰策略是 FIFO，不是 LRU</b>（见 spec §8）：历史只追加、不被复用，
- * 记录的价值随时间单调递减（最新最有用），FIFO 与这个语义天然吻合。而 LRU
- * 需要在每次读时更新访问元数据，会把读操作退化为写操作，与下面「读锁可并发」
- * 的设计直接冲突 —— 而分页查询正是最热的路径。
+ * <p><b>淘汰策略是 FIFO，不是 LRU</b>（spec §8）：历史只追加、不被复用，记录的
+ * 价值随时间单调递减（最新最有用），FIFO 与这个语义天然吻合。而 LRU 需要在每次
+ * 读时更新访问元数据，会把读操作退化为写操作，与下面「读锁可并发」的设计直接
+ * 冲突 —— 而分页查询正是最热的路径。
  */
-@Repository
-public class InMemoryCalculationHistoryStore implements CalculationHistoryStore {
+public class InMemoryCalculationHistory implements CalculationHistory {
 
-    private final Deque<HistoryRecord> records = new ArrayDeque<>();
+    private final Deque<Calculation> records = new ArrayDeque<>();
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final AtomicLong sequence = new AtomicLong(0);
     /** <= 0 表示不限制容量。 */
     private final int capacity;
 
-    public InMemoryCalculationHistoryStore(CalculatorProperties properties) {
-        this.capacity = properties.historyCapacity();
+    public InMemoryCalculationHistory(int capacity) {
+        this.capacity = capacity;
     }
 
     @Override
-    public HistoryRecord append(String expression, CalcNumber result, AngleUnit angleUnit, double elapsedMs) {
-        HistoryRecord record = new HistoryRecord(
-                sequence.incrementAndGet(), expression, result, angleUnit, elapsedMs, Instant.now());
+    public Calculation append(ExpressionText expression, CalcNumber result, AngleUnit angleUnit,
+                              double elapsedMs) {
+        Calculation record = new Calculation(sequence.incrementAndGet(), expression, result,
+                angleUnit, elapsedMs, Instant.now());
         lock.writeLock().lock();
         try {
             records.addFirst(record);
@@ -3833,7 +4124,7 @@ public class InMemoryCalculationHistoryStore implements CalculationHistoryStore 
     }
 
     @Override
-    public Optional<HistoryRecord> find(long id) {
+    public Optional<Calculation> find(long id) {
         lock.readLock().lock();
         try {
             return records.stream().filter(r -> r.id() == id).findFirst();
@@ -3843,13 +4134,13 @@ public class InMemoryCalculationHistoryStore implements CalculationHistoryStore 
     }
 
     @Override
-    public PageResult<HistoryRecord> findPage(int page, int size) {
+    public PageResult<Calculation> page(int page, int size) {
         lock.readLock().lock();
         try {
             long total = records.size();
-            List<HistoryRecord> snapshot = new ArrayList<>(records);
+            List<Calculation> snapshot = new ArrayList<>(records);
             int from = page * size;
-            List<HistoryRecord> items = from >= snapshot.size()
+            List<Calculation> items = from >= snapshot.size()
                     ? List.of()
                     : List.copyOf(snapshot.subList(from, Math.min(from + size, snapshot.size())));
             int totalPages = size > 0 ? (int) ((total + size - 1) / size) : 0;
@@ -3886,396 +4177,367 @@ public class InMemoryCalculationHistoryStore implements CalculationHistoryStore 
 
 - [ ] **Step 5: 运行测试确认通过**
 
-运行：`mvn -q test -Dtest=InMemoryCalculationHistoryStoreTest`
+运行：`mvn -q test -Dtest=InMemoryCalculationHistoryTest`
 
-预期：14 个测试全部 PASS。
+预期：16 个测试全部 PASS。
 
 **若 `concurrentAppendsRespectCapacityExactly` 失败**：说明「追加 + 淘汰」没有放在同一个写锁临界区内。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/store/HistoryRecord.java \
-        src/main/java/com/wysjwxm/calculator/store/PageResult.java \
-        src/main/java/com/wysjwxm/calculator/store/CalculationHistoryStore.java \
-        src/main/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStore.java \
-        src/test/java/com/wysjwxm/calculator/store/InMemoryCalculationHistoryStoreTest.java
-git commit -m "feat: 历史存储 — 带容量上限的 FIFO 淘汰与读写锁并发"
+git add src/main/java/com/wysjwxm/calculator/domain/model/calculation/ \
+        src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistory.java \
+        src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryCalculationHistoryTest.java
+git commit -m "feat: 计算历史聚合根与内存实现 — FIFO 淘汰与读写锁并发"
 ```
 
 ---
 
-### Task 11: 服务层
+### Task 11: 变量聚合根
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/service/VariableService.java`
-- Create: `src/main/java/com/wysjwxm/calculator/service/HistoryService.java`
-- Create: `src/main/java/com/wysjwxm/calculator/service/CalculationService.java`
-- Test: `src/test/java/com/wysjwxm/calculator/service/VariableServiceTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/service/CalculationServiceTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/service/HistoryServiceTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/domain/model/variable/VariableSet.java`
+- Create: `src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSet.java`
+- Test: `src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSetTest.java`
 
 **Interfaces:**
-- Consumes: `VariableStore`（Task 9）、`CalculationHistoryStore`、`PageResult`（Task 10）、全部 core 组件（Task 1–8）、`CalculatorProperties`（Task 1）
+- Consumes: `VariableName`、`Variable`（Task 8）、`CalcNumber`（Task 3）
 - Produces:
-  - `VariableService`：`VariableRecord put(String name, CalcNumber value)`、`VariableRecord get(String name)`、`List<VariableRecord> list()`、`void delete(String name)`、**`void validateVariableName(String name)`**（供 `CalculationService` 复用，保证两个入口同一套校验）
-  - `HistoryService`：`PageResult<HistoryRecord> page(int page, int size)`、`HistoryRecord get(long id)`、`int clear()`
-  - `CalculationService`：`CalculationOutcome calculate(String expression, AngleUnit angleUnit, Map<String, CalcNumber> requestVariables)`
-  - `record CalculationOutcome(HistoryRecord record)` — 携带落库后的记录，`record.expression()` / `record.result()` 等直接可用
+  - `interface VariableSet`：`Variable define(VariableName name, CalcNumber value)`、`Optional<Variable> find(VariableName name)`、`List<Variable> all()`（按 name 升序）、`boolean remove(VariableName name)`、`int size()`
+  - `InMemoryVariableSet implements VariableSet`，无参构造器
 
-- [ ] **Step 1: 写变量服务的失败测试**
+- [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/service/VariableServiceTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSetTest.java`：
 
 ```java
-package com.wysjwxm.calculator.service;
+package com.wysjwxm.calculator.infrastructure;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.store.InMemoryVariableStore;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
+import com.wysjwxm.calculator.domain.model.variable.Variable;
+import com.wysjwxm.calculator.domain.model.variable.VariableName;
+import com.wysjwxm.calculator.domain.model.variable.VariableSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.IntConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class VariableServiceTest {
+class InMemoryVariableSetTest {
 
-    private final VariableService service = new VariableService(new InMemoryVariableStore());
+    private final VariableSet variables = new InMemoryVariableSet();
+
+    private VariableName name(String raw) {
+        return new VariableName(raw);
+    }
 
     private CalcNumber num(String v) {
         return new DecimalNumber(new BigDecimal(v));
     }
 
     @Test
-    void putAndGet() {
-        service.put("x", num("5"));
-        assertThat(service.get("x").value().toDecimal()).isEqualByComparingTo("5");
+    void defineThenFind() {
+        variables.define(name("x"), num("5"));
+        assertThat(variables.find(name("x")).orElseThrow().value().toDecimal())
+                .isEqualByComparingTo("5");
     }
 
     @Test
-    void getUnknownThrowsNotFound() {
-        assertThatThrownBy(() -> service.get("nope"))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.VARIABLE_NOT_FOUND);
+    void unknownNameIsEmpty() {
+        assertThat(variables.find(name("nope"))).isEmpty();
     }
 
     @Test
-    void putIsIdempotentUpsert() {
-        service.put("x", num("5"));
-        service.put("x", num("6"));
-        assertThat(service.list()).hasSize(1);
-        assertThat(service.get("x").value().toDecimal()).isEqualByComparingTo("6");
+    void defineOverwritesAndKeepsCreatedAt() {
+        Variable first = variables.define(name("x"), num("5"));
+        Variable second = variables.define(name("x"), num("6"));
+        assertThat(second.value().toDecimal()).isEqualByComparingTo("6");
+        assertThat(second.createdAt()).isEqualTo(first.createdAt());
+        assertThat(variables.size()).isEqualTo(1);
     }
 
     @Test
-    void deleteUnknownThrowsNotFound() {
-        assertThatThrownBy(() -> service.delete("nope"))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.VARIABLE_NOT_FOUND);
-    }
-
-    // ---------- 保留名校验（spec §6.4） ----------
-
-    @Test
-    void rejectsReservedConstantNames() {
-        assertThatThrownBy(() -> service.put("pi", num("3")))
-                .isInstanceOf(CalcException.class)
-                .satisfies(e -> {
-                    CalcException ce = (CalcException) e;
-                    assertThat(ce.code()).isEqualTo(CalcErrorCode.INVALID_REQUEST);
-                    assertThat(ce.getMessage()).contains("pi");
-                });
-        assertThatThrownBy(() -> service.put("e", num("3")))
-                .isInstanceOf(CalcException.class);
+    void allIsSortedByName() {
+        variables.define(name("zeta"), num("1"));
+        variables.define(name("alpha"), num("2"));
+        variables.define(name("mid"), num("3"));
+        assertThat(variables.all()).extracting(v -> v.name().value())
+                .containsExactly("alpha", "mid", "zeta");
     }
 
     @Test
-    void rejectsFunctionNames() {
-        assertThatThrownBy(() -> service.put("sin", num("3")))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
-        assertThatThrownBy(() -> service.put("log", num("3")))
-                .isInstanceOf(CalcException.class);
+    void removeReportsWhetherAnythingWasRemoved() {
+        variables.define(name("x"), num("5"));
+        assertThat(variables.remove(name("x"))).isTrue();
+        assertThat(variables.remove(name("x"))).isFalse();
+        assertThat(variables.find(name("x"))).isEmpty();
     }
 
     @Test
-    void acceptsOrdinaryNames() {
-        assertThatCode(() -> service.validateVariableName("x")).doesNotThrowAnyException();
-        assertThatCode(() -> service.validateVariableName("x_1")).doesNotThrowAnyException();
-        assertThatCode(() -> service.validateVariableName("_tmp")).doesNotThrowAnyException();
-        assertThatCode(() -> service.validateVariableName("aVeryLongButLegalName")).doesNotThrowAnyException();
+    void allIsAnImmutableSnapshot() {
+        variables.define(name("x"), num("5"));
+        var snapshot = variables.all();
+        assertThat(snapshot).hasSize(1);
+        variables.define(name("y"), num("6"));
+        assertThat(snapshot).hasSize(1);
+    }
+
+    // ---------- 并发 ----------
+
+    @Test
+    void concurrentWritesToDistinctKeysAllSurvive() throws Exception {
+        int threads = 8;
+        int perThread = 1000;
+        runConcurrently(threads, id -> {
+            for (int i = 0; i < perThread; i++) {
+                variables.define(name("k" + id + "_" + i), num(String.valueOf(i)));
+            }
+        });
+        assertThat(variables.size()).isEqualTo(threads * perThread);
     }
 
     @Test
-    void rejectsMalformedNames() {
-        assertThatThrownBy(() -> service.validateVariableName("1abc")).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.validateVariableName("a-b")).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.validateVariableName("a b")).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.validateVariableName("")).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.validateVariableName(null)).isInstanceOf(CalcException.class);
+    void concurrentOverwritesOfSameKeyLeaveExactlyOneValue() throws Exception {
+        runConcurrently(8, id -> {
+            for (int i = 0; i < 500; i++) {
+                variables.define(name("shared"), num(String.valueOf(id)));
+            }
+        });
+        assertThat(variables.size()).isEqualTo(1);
+        assertThat(variables.find(name("shared"))).isPresent();
     }
 
     @Test
-    void rejectsOverlongNames() {
-        String tooLong = "x".repeat(65);
-        assertThatThrownBy(() -> service.validateVariableName(tooLong)).isInstanceOf(CalcException.class);
-        assertThatCode(() -> service.validateVariableName("x".repeat(64))).doesNotThrowAnyException();
+    void concurrentReadsAndWritesDoNotFail() throws Exception {
+        variables.define(name("x"), num("1"));
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+            final boolean writer = t % 2 == 0;
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < 1000; i++) {
+                        if (writer) {
+                            variables.define(name("w" + i), num("1"));
+                        } else {
+                            variables.find(name("x"));
+                            variables.all();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        start.countDown();
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
+        assertThat(variables.size()).isGreaterThanOrEqualTo(1);
     }
 
-    @Test
-    void validateVariableNameReturnsInvalidRequestForReserved() {
-        assertThatThrownBy(() -> service.validateVariableName("pi"))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    private void runConcurrently(int threads, IntConsumer body) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+            final int id = t;
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    body.accept(id);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        start.countDown();
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
     }
 }
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-运行：`mvn -q test -Dtest=VariableServiceTest`
+运行：`mvn -q test -Dtest=InMemoryVariableSetTest`
 
-预期：编译失败，`VariableService` 不存在。
+预期：编译失败，`InMemoryVariableSet` 不存在。
 
-- [ ] **Step 3: 创建 VariableService**
+- [ ] **Step 3: 创建 VariableSet 接口**
 
-创建 `src/main/java/com/wysjwxm/calculator/service/VariableService.java`：
+创建 `src/main/java/com/wysjwxm/calculator/domain/model/variable/VariableSet.java`：
 
 ```java
-package com.wysjwxm.calculator.service;
+package com.wysjwxm.calculator.domain.model.variable;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.store.VariableRecord;
-import com.wysjwxm.calculator.store.VariableStore;
-import org.springframework.stereotype.Service;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.util.List;
-import java.util.Set;
-import java.util.regex.Pattern;
+import java.util.Optional;
 
-@Service
-public class VariableService {
+/**
+ * 变量表聚合根。
+ *
+ * <p>一致性边界：变量名不得为保留名。该不变量**不在本接口上强制** ——
+ * 它由 {@link VariableName} 的构造器保证，因此任何传进来的名字都已合法。
+ * 聚合根因此无需重复校验，这就是把规则放进值对象而非服务的好处。
+ *
+ * <p>方法名用 define 而非 put：语义是「定义（或重定义）一个变量」，
+ * 覆盖是刻意支持的行为，而非副作用。
+ */
+public interface VariableSet {
 
-    private static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-    private static final int MAX_NAME_LENGTH = 64;
+    /** 幂等 upsert：已存在则整体替换，createdAt 保持不变。 */
+    Variable define(VariableName name, CalcNumber value);
 
-    private final VariableStore store;
-    private final Set<String> reservedNames;
+    Optional<Variable> find(VariableName name);
 
-    public VariableService(VariableStore store, FunctionRegistry functionRegistry) {
-        this.store = store;
-        this.reservedNames = functionRegistry.reservedNames();
+    /** 按 name 字典序升序返回全部。 */
+    List<Variable> all();
+
+    boolean remove(VariableName name);
+
+    int size();
+}
+```
+
+- [ ] **Step 4: 创建 InMemoryVariableSet**
+
+创建 `src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSet.java`：
+
+```java
+package com.wysjwxm.calculator.infrastructure;
+
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.variable.Variable;
+import com.wysjwxm.calculator.domain.model.variable.VariableName;
+import com.wysjwxm.calculator.domain.model.variable.VariableSet;
+
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+/**
+ * 变量表聚合根的内存实现。
+ *
+ * <p>用 ConcurrentHashMap 而非加锁：变量是「按 name 独立」的数据，单键操作天然
+ * 原子，无锁读让高频的表达式求值不必等待。
+ */
+public class InMemoryVariableSet implements VariableSet {
+
+    private final ConcurrentMap<VariableName, Variable> variables = new ConcurrentHashMap<>();
+
+    @Override
+    public Variable define(VariableName name, CalcNumber value) {
+        Instant now = Instant.now();
+        // compute 让「读旧 createdAt + 写新记录」成为单键原子操作
+        return variables.compute(name, (key, existing) -> new Variable(
+                key, value, existing == null ? now : existing.createdAt(), now));
     }
 
-    public VariableRecord put(String name, CalcNumber value) {
-        validateVariableName(name);
-        return store.put(name, value);
+    @Override
+    public Optional<Variable> find(VariableName name) {
+        return Optional.ofNullable(variables.get(name));
     }
 
-    public VariableRecord get(String name) {
-        return store.find(name).orElseThrow(() -> CalcException.of(
-                CalcErrorCode.VARIABLE_NOT_FOUND, "变量不存在: " + name));
+    @Override
+    public List<Variable> all() {
+        return variables.values().stream()
+                .sorted(Comparator.comparing(v -> v.name().value()))
+                .toList();
     }
 
-    public List<VariableRecord> list() {
-        return store.findAll();
+    @Override
+    public boolean remove(VariableName name) {
+        return variables.remove(name) != null;
     }
 
-    public void delete(String name) {
-        if (!store.delete(name)) {
-            throw CalcException.of(CalcErrorCode.VARIABLE_NOT_FOUND, "变量不存在: " + name);
-        }
-    }
-
-    /**
-     * 校验变量名。**存储写入与请求级临时变量两个入口都走这一个方法**，
-     * 保证同一表达式在不同入口下对 pi 等保留名的解释一致（spec §6.4）。
-     */
-    public void validateVariableName(String name) {
-        if (name == null || name.isEmpty()) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "变量名不能为空");
-        }
-        if (name.length() > MAX_NAME_LENGTH) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
-                    "变量名长度不得超过 " + MAX_NAME_LENGTH + "，实际为 " + name.length());
-        }
-        if (!NAME_PATTERN.matcher(name).matches()) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
-                    "变量名必须以字母或下划线开头、仅含字母数字下划线: " + name);
-        }
-        if (reservedNames.contains(name)) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
-                    "变量名 " + name + " 是保留名（函数名或内置常量），不可使用");
-        }
+    @Override
+    public int size() {
+        return variables.size();
     }
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 5: 运行测试确认通过**
 
-运行：`mvn -q test -Dtest=VariableServiceTest`
+运行：`mvn -q test -Dtest=InMemoryVariableSetTest`
 
-预期：10 个测试 PASS。
+预期：9 个测试全部 PASS。
 
-- [ ] **Step 5: 写历史服务的失败测试**
+- [ ] **Step 6: 提交**
 
-创建 `src/test/java/com/wysjwxm/calculator/service/HistoryServiceTest.java`：
-
-```java
-package com.wysjwxm.calculator.service;
-
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.store.InMemoryCalculationHistoryStore;
-import org.junit.jupiter.api.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-class HistoryServiceTest {
-
-    private final InMemoryCalculationHistoryStore store =
-            new InMemoryCalculationHistoryStore(new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, 100));
-    private final HistoryService service = new HistoryService(store);
-    private final Numbers numbers = new Numbers(34);
-
-    @Test
-    void pageRejectsNegativePage() {
-        assertThatThrownBy(() -> service.page(-1, 10))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
-    }
-
-    @Test
-    void pageRejectsSizeOutOfRange() {
-        assertThatThrownBy(() -> service.page(0, 0)).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.page(0, 101)).isInstanceOf(CalcException.class);
-        assertThatThrownBy(() -> service.page(0, -5)).isInstanceOf(CalcException.class);
-    }
-
-    @Test
-    void pageAcceptsBoundarySizes() {
-        assertThat(service.page(0, 1).size()).isEqualTo(1);
-        assertThat(service.page(0, 100).size()).isEqualTo(100);
-    }
-
-    @Test
-    void getUnknownThrowsNotFound() {
-        assertThatThrownBy(() -> service.get(42L))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.HISTORY_NOT_FOUND);
-    }
-
-    @Test
-    void getReturnsRecord() {
-        var record = store.append("1+1", numbers.of(2L), null, 0.1);
-        assertThat(service.get(record.id())).isEqualTo(record);
-    }
-
-    @Test
-    void clearReportsCount() {
-        store.append("a", numbers.of(1L), null, 0.1);
-        store.append("b", numbers.of(1L), null, 0.1);
-        assertThat(service.clear()).isEqualTo(2);
-    }
-}
+```bash
+git add src/main/java/com/wysjwxm/calculator/domain/model/variable/VariableSet.java \
+        src/main/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSet.java \
+        src/test/java/com/wysjwxm/calculator/infrastructure/InMemoryVariableSetTest.java
+git commit -m "feat: 变量表聚合根与内存实现 — ConcurrentHashMap 无锁读"
 ```
 
-- [ ] **Step 6: 运行确认失败**
+---
 
-运行：`mvn -q test -Dtest=HistoryServiceTest`
+### Task 12: 应用层用例与 Spring 装配
 
-预期：编译失败，`HistoryService` 不存在。
+应用层只做编排，不含业务规则。**所有 Bean 装配集中在 `CalculatorConfiguration`** —— 领域类不能加 Spring 注解。
 
-- [ ] **Step 7: 创建 HistoryService**
+**Files:**
+- Create: `src/main/java/com/wysjwxm/calculator/application/CalculationPolicy.java`
+- Create: `src/main/java/com/wysjwxm/calculator/application/CalculationCommand.java`
+- Create: `src/main/java/com/wysjwxm/calculator/application/CalculationUseCase.java`
+- Create: `src/main/java/com/wysjwxm/calculator/application/VariableUseCase.java`
+- Create: `src/main/java/com/wysjwxm/calculator/application/HistoryUseCase.java`
+- Create: `src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorConfiguration.java`
+- Test: `src/test/java/com/wysjwxm/calculator/application/CalculationUseCaseTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/application/VariableUseCaseTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/application/HistoryUseCaseTest.java`
 
-创建 `src/main/java/com/wysjwxm/calculator/service/HistoryService.java`：
+**Interfaces:**
+- Consumes: 全部领域组件（Task 1–11）
+- Produces:
+  - `record CalculationPolicy(AngleUnit defaultAngleUnit, int maxExpressionLength)`
+  - `record CalculationCommand(String expression, AngleUnit angleUnit, Map<String, CalcNumber> variables)`，静态工厂 `of(String expression)`
+  - `CalculationUseCase`：`Calculation calculate(CalculationCommand command)`
+  - `VariableUseCase`：`Variable define(String rawName, CalcNumber value)`、`Variable get(String rawName)`、`List<Variable> list()`、`void remove(String rawName)`
+  - `HistoryUseCase`：`PageResult<Calculation> page(int page, int size)`、`Calculation get(long id)`、`int clear()`
+  - `CalculatorConfiguration`（`@Configuration`）：产出 `Numbers`、`FunctionRegistry`、`ExpressionParser`、`ExpressionEvaluator`、`CalculationPolicy`、`VariableSet`、`CalculationHistory`、`CalculationUseCase`、`VariableUseCase`、`HistoryUseCase` 十个 Bean
 
-```java
-package com.wysjwxm.calculator.service;
+- [ ] **Step 1: 写 CalculationUseCase 失败测试**
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.store.CalculationHistoryStore;
-import com.wysjwxm.calculator.store.HistoryRecord;
-import com.wysjwxm.calculator.store.PageResult;
-import org.springframework.stereotype.Service;
-
-@Service
-public class HistoryService {
-
-    private static final int MIN_PAGE_SIZE = 1;
-    private static final int MAX_PAGE_SIZE = 100;
-
-    private final CalculationHistoryStore store;
-
-    public HistoryService(CalculationHistoryStore store) {
-        this.store = store;
-    }
-
-    public PageResult<HistoryRecord> page(int page, int size) {
-        if (page < 0) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "page 不能为负数: " + page);
-        }
-        if (size < MIN_PAGE_SIZE || size > MAX_PAGE_SIZE) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
-                    "size 必须在 " + MIN_PAGE_SIZE + " 到 " + MAX_PAGE_SIZE + " 之间，实际为 " + size);
-        }
-        return store.findPage(page, size);
-    }
-
-    public HistoryRecord get(long id) {
-        return store.find(id).orElseThrow(() -> CalcException.of(
-                CalcErrorCode.HISTORY_NOT_FOUND, "历史记录不存在: " + id));
-    }
-
-    public int clear() {
-        return store.clear();
-    }
-}
-```
-
-- [ ] **Step 8: 运行确认通过**
-
-运行：`mvn -q test -Dtest=HistoryServiceTest`
-
-预期：6 个测试 PASS。
-
-- [ ] **Step 9: 写计算服务的失败测试**
-
-创建 `src/test/java/com/wysjwxm/calculator/service/CalculationServiceTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/application/CalculationUseCaseTest.java`：
 
 ```java
-package com.wysjwxm.calculator.service;
+package com.wysjwxm.calculator.application;
 
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.store.InMemoryCalculationHistoryStore;
-import com.wysjwxm.calculator.store.InMemoryVariableStore;
-import com.wysjwxm.calculator.store.HistoryRecord;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.expression.eval.ExpressionEvaluator;
+import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import com.wysjwxm.calculator.domain.model.variable.VariableName;
+import com.wysjwxm.calculator.infrastructure.InMemoryCalculationHistory;
+import com.wysjwxm.calculator.infrastructure.InMemoryVariableSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -4284,87 +4546,134 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class CalculationServiceTest {
+class CalculationUseCaseTest {
 
-    private final InMemoryCalculationHistoryStore historyStore =
-            new InMemoryCalculationHistoryStore(new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, 100));
-    private final VariableService variableService = new VariableService(new InMemoryVariableStore(), new FunctionRegistry());
-    private final CalculationService service =
-            new CalculationService(new FunctionRegistry(), new Numbers(34), historyStore, variableService,
-                    new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, 100));
+    private final FunctionRegistry registry = new FunctionRegistry();
+    private final Numbers numbers = new Numbers(34);
+    private final InMemoryCalculationHistory history = new InMemoryCalculationHistory(100);
+    private final InMemoryVariableSet variables = new InMemoryVariableSet();
+    private final CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000);
+    private final CalculationUseCase useCase = new CalculationUseCase(
+            new ExpressionParser(), new ExpressionEvaluator(registry, numbers), history, policy);
 
     private CalcNumber num(String v) {
         return new DecimalNumber(new BigDecimal(v));
     }
 
-    private CalculationOutcome calc(String expr) {
-        return service.calculate(expr, null, Map.of());
+    private Calculation calc(String expression) {
+        return useCase.calculate(CalculationCommand.of(expression));
     }
+
+    // ---------- 基本求值与落库 ----------
 
     @Test
     void evaluatesAndRecordsHistory() {
-        CalculationOutcome outcome = calc("1+2");
-        assertThat(outcome.record().result().toDecimal()).isEqualByComparingTo("3");
-        assertThat(outcome.record().expression()).isEqualTo("1+2");
-        assertThat(historyStore.size()).isEqualTo(1);
+        Calculation record = calc("1+2");
+        assertThat(record.result().toDecimal()).isEqualByComparingTo("3");
+        assertThat(record.expression().value()).isEqualTo("1+2");
+        assertThat(history.size()).isEqualTo(1);
     }
 
     @Test
     void historyRecordsElapsedTime() {
-        assertThat(calc("1+2").record().elapsedMs()).isGreaterThanOrEqualTo(0.0);
+        assertThat(calc("1+2").elapsedMs()).isGreaterThanOrEqualTo(0.0);
+    }
+
+    @Test
+    void historyIdsIncrease() {
+        Calculation first = calc("1+1");
+        Calculation second = calc("2+2");
+        assertThat(second.id()).isGreaterThan(first.id());
+    }
+
+    @Test
+    void expressionIsTrimmedBeforeStoring() {
+        assertThat(calc("  1+2  ").expression().value()).isEqualTo("1+2");
+    }
+
+    @Test
+    void failedEvaluationDoesNotWriteHistory() {
+        assertThatThrownBy(() -> calc("1/0")).isInstanceOf(CalcException.class);
+        assertThat(history.size()).isZero();
+    }
+
+    @Test
+    void parseErrorCarriesPosition() {
+        assertThatThrownBy(() -> calc("1+"))
+                .isInstanceOf(CalcException.class)
+                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(2));
+    }
+
+    // ---------- 策略：表达式长度 ----------
+
+    @Test
+    void rejectsExpressionExceedingPolicyLimit() {
+        CalculationPolicy tightPolicy = new CalculationPolicy(AngleUnit.DEGREE, 10);
+        CalculationUseCase tight = new CalculationUseCase(
+                new ExpressionParser(), new ExpressionEvaluator(registry, numbers), history, tightPolicy);
+        assertThatThrownBy(() -> tight.calculate(CalculationCommand.of("1+".repeat(20) + "1")))
+                .isInstanceOf(CalcException.class)
+                .satisfies(e -> {
+                    CalcException ce = (CalcException) e;
+                    assertThat(ce.code()).isEqualTo(CalcErrorCode.INVALID_REQUEST);
+                    assertThat(ce.getMessage()).contains("10");
+                });
+    }
+
+    @Test
+    void rejectsNullAndBlankExpression() {
+        assertThatThrownBy(() -> calc(null)).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> calc("   ")).isInstanceOf(CalcException.class);
     }
 
     // ---------- 角度单位 ----------
 
     @Test
-    void defaultsToConfiguredAngleUnitWhenRequestOmitsIt() {
-        CalculationOutcome outcome = service.calculate("sin(30)", null, Map.of());
-        assertThat(outcome.record().result().toDouble())
+    void defaultsToPolicyAngleUnitWhenCommandOmitsIt() {
+        Calculation record = calc("sin(30)");
+        assertThat(record.result().toDouble())
                 .isCloseTo(0.5, org.assertj.core.data.Offset.offset(1e-12));
-        assertThat(outcome.record().angleUnit()).isEqualTo(AngleUnit.DEGREE);
+        assertThat(record.angleUnit()).isEqualTo(AngleUnit.DEGREE);
     }
 
     @Test
-    void requestAngleUnitOverridesConfiguredDefault() {
-        CalculationOutcome outcome = service.calculate("sin(30)", AngleUnit.RADIAN, Map.of());
-        assertThat(outcome.record().result().toDouble())
+    void commandAngleUnitOverridesPolicy() {
+        Calculation record = useCase.calculate(
+                new CalculationCommand("sin(30)", AngleUnit.RADIAN, Map.of()));
+        assertThat(record.result().toDouble())
                 .isCloseTo(Math.sin(30), org.assertj.core.data.Offset.offset(1e-12));
-        assertThat(outcome.record().angleUnit()).isEqualTo(AngleUnit.RADIAN);
+        assertThat(record.angleUnit()).isEqualTo(AngleUnit.RADIAN);
     }
 
     @Test
     void angleUnitIsNullForNonTrigonometricExpressions() {
         // spec §7.3：非三角记录该字段为 null
-        assertThat(calc("1+2").record().angleUnit()).isNull();
-        assertThat(calc("sqrt(16)").record().angleUnit()).isNull();
-        assertThat(calc("1+2").record().angleUnit()).isNull();
+        assertThat(calc("1+2").angleUnit()).isNull();
+        assertThat(calc("sqrt(16)").angleUnit()).isNull();
+        assertThat(calc("hypot(3,4)").angleUnit()).isNull();
+        assertThat(calc("atan2(1,1)").angleUnit()).isNotNull();
     }
 
-    // ---------- 变量 ----------
+    // ---------- 请求级变量 ----------
 
     @Test
-    void resolvesStoredVariables() {
-        variableService.put("x", num("5"));
-        assertThat(calc("x*2").record().result().toDecimal()).isEqualByComparingTo("10");
-    }
-
-    @Test
-    void requestVariablesOverrideStoredOnes() {
-        variableService.put("x", num("5"));
-        CalculationOutcome outcome = service.calculate("x*2", null, Map.of("x", num("7")));
-        assertThat(outcome.record().result().toDecimal()).isEqualByComparingTo("14");
+    void requestVariablesAreUsable() {
+        Calculation record = useCase.calculate(
+                new CalculationCommand("x*2", null, Map.of("x", num("7"))));
+        assertThat(record.result().toDecimal()).isEqualByComparingTo("14");
     }
 
     @Test
     void requestVariablesDoNotPersist() {
-        service.calculate("x*2", null, Map.of("x", num("7")));
-        assertThat(variableService.list()).isEmpty();
+        useCase.calculate(new CalculationCommand("x*2", null, Map.of("x", num("7"))));
+        assertThat(variables.size()).isZero();
     }
 
     @Test
     void requestVariablesRejectReservedNames() {
         // spec §7.1：请求级变量同样受禁用集合约束，不为「临时、不落库」开口子
-        assertThatThrownBy(() -> service.calculate("sin(pi)", null, Map.of("pi", num("3"))))
+        assertThatThrownBy(() -> useCase.calculate(
+                new CalculationCommand("sin(pi)", null, Map.of("pi", num("3")))))
                 .isInstanceOf(CalcException.class)
                 .satisfies(e -> {
                     CalcException ce = (CalcException) e;
@@ -4375,246 +4684,704 @@ class CalculationServiceTest {
 
     @Test
     void requestVariablesRejectFunctionNames() {
-        assertThatThrownBy(() -> service.calculate("1+1", null, Map.of("sin", num("3"))))
+        assertThatThrownBy(() -> useCase.calculate(
+                new CalculationCommand("1+1", null, Map.of("sin", num("3")))))
                 .isInstanceOf(CalcException.class)
                 .extracting(e -> ((CalcException) e).code())
                 .isEqualTo(CalcErrorCode.INVALID_REQUEST);
     }
 
     @Test
-    void constantsRemainIntactDespiteFailedOverrideAttempt() {
-        assertThatThrownBy(() -> service.calculate("sin(pi)", null, Map.of("pi", num("3"))))
+    void requestVariablesRejectMalformedNames() {
+        assertThatThrownBy(() -> useCase.calculate(
+                new CalculationCommand("1+1", null, Map.of("1abc", num("3")))))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void rejectedRequestVariablesLeaveNoTrace() {
+        assertThatThrownBy(() -> useCase.calculate(
+                new CalculationCommand("sin(pi)", null, Map.of("pi", num("3")))))
                 .isInstanceOf(CalcException.class);
-        // 失败的请求不应写入历史
-        assertThat(historyStore.size()).isZero();
+        assertThat(history.size()).isZero();
         // pi 仍是常量
-        assertThat(service.calculate("pi", null, Map.of()).record().result().toDouble())
+        assertThat(calc("pi").result().toDouble())
                 .isCloseTo(Math.PI, org.assertj.core.data.Offset.offset(1e-15));
     }
 
-    // ---------- 表达式校验 ----------
-
     @Test
-    void rejectsNullExpression() {
-        assertThatThrownBy(() -> service.calculate(null, null, Map.of()))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    void commandOfHelperProducesEmptyVariables() {
+        assertThat(CalculationCommand.of("1+1").variables()).isEmpty();
+        assertThat(CalculationCommand.of("1+1").angleUnit()).isNull();
     }
 
     @Test
-    void rejectsBlankExpression() {
-        assertThatThrownBy(() -> service.calculate("   ", null, Map.of()))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    void commandVariablesAreDefensivelyCopied() {
+        var mutable = new java.util.HashMap<String, CalcNumber>();
+        mutable.put("x", num("5"));
+        CalculationCommand command = new CalculationCommand("x", null, mutable);
+        mutable.put("y", num("6"));
+        assertThat(command.variables()).containsOnlyKeys("x");
     }
 
     @Test
-    void rejectsOverlongExpression() {
-        String tooLong = "1+".repeat(600) + "1";
-        assertThatThrownBy(() -> service.calculate(tooLong, null, Map.of()))
-                .isInstanceOf(CalcException.class)
-                .extracting(e -> ((CalcException) e).code())
-                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    void nullVariablesAreTreatedAsEmpty() {
+        Calculation record = useCase.calculate(new CalculationCommand("1+1", null, null));
+        assertThat(record.result().toDecimal()).isEqualByComparingTo("2");
     }
 
-    @Test
-    void trimsExpressionBeforeEvaluating() {
-        assertThat(calc("  1+2  ").record().result().toDecimal()).isEqualByComparingTo("3");
-    }
+    // ---------- 与聚合根的协作 ----------
 
     @Test
-    void failedEvaluationDoesNotWriteHistory() {
-        assertThatThrownBy(() -> calc("1/0")).isInstanceOf(CalcException.class);
-        assertThat(historyStore.size()).isZero();
-    }
-
-    @Test
-    void parseErrorCarriesPosition() {
-        assertThatThrownBy(() -> calc("1+"))
-                .isInstanceOf(CalcException.class)
-                .satisfies(e -> assertThat(((CalcException) e).position()).isEqualTo(2));
-    }
-
-    @Test
-    void historyIdsIncrease() {
-        HistoryRecord first = calc("1+1").record();
-        HistoryRecord second = calc("2+2").record();
-        assertThat(second.id()).isGreaterThan(first.id());
+    void storedVariableIsVisibleToEvaluation() {
+        variables.define(new VariableName("stored"), num("11"));
+        Calculation record = useCase.calculate(
+                new CalculationCommand("stored + x", null, Map.of("x", num("1"))));
+        assertThat(record.result().toDecimal()).isEqualByComparingTo("12");
     }
 }
 ```
 
-- [ ] **Step 10: 运行确认失败**
+**注**：「存储变量」与「请求级变量」的合并由 `interfaces` 层的 Controller 完成（它同时持有 `VariableUseCase` 与 `CalculationUseCase`，见 Task 14）。上面最后一条测试注入的是 `InMemoryVariableSet`，只用于验证用例本身的行为边界 —— 真正把已存变量喂进求值是 `CalculatorController` 的职责。
 
-运行：`mvn -q test -Dtest=CalculationServiceTest`
+- [ ] **Step 2: 运行确认失败**
 
-预期：编译失败，`CalculationService` 不存在。
+运行：`mvn -q test -Dtest=CalculationUseCaseTest`
 
-- [ ] **Step 11: 创建 CalculationService 与 CalculationOutcome**
+预期：编译失败，`CalculationUseCase` 不存在。
 
-创建 `src/main/java/com/wysjwxm/calculator/service/CalculationOutcome.java`：
+- [ ] **Step 3: 创建 CalculationPolicy 与 CalculationCommand**
+
+创建 `src/main/java/com/wysjwxm/calculator/application/CalculationPolicy.java`：
 
 ```java
-package com.wysjwxm.calculator.service;
+package com.wysjwxm.calculator.application;
 
-import com.wysjwxm.calculator.store.HistoryRecord;
+import com.wysjwxm.calculator.domain.AngleUnit;
 
 /**
- * 一次成功求值的结果。携带落库后的历史记录，因此接口层需要的
- * 结果值、耗时、记录 id 都在其中。
+ * 应用层策略：来自配置、但由用例施加的取值。
+ *
+ * <p>纯 Java record，无任何框架注解 —— 这样 application 层不必 import
+ * infrastructure 里的 CalculatorProperties，依赖方向不被配置类破口。
+ *
+ * @param maxExpressionLength 表达式长度上限。它是资源保护策略而非语言不变量，
+ *                            因此不进 ExpressionText 的构造器，在此处强制。
  */
-public record CalculationOutcome(HistoryRecord record) {
+public record CalculationPolicy(AngleUnit defaultAngleUnit, int maxExpressionLength) {
+
+    public CalculationPolicy {
+        if (defaultAngleUnit == null) {
+            throw new IllegalArgumentException("defaultAngleUnit 不能为空");
+        }
+        if (maxExpressionLength < 1) {
+            throw new IllegalArgumentException("maxExpressionLength 必须为正数: " + maxExpressionLength);
+        }
+    }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/service/CalculationService.java`：
+创建 `src/main/java/com/wysjwxm/calculator/application/CalculationCommand.java`：
 
 ```java
-package com.wysjwxm.calculator.service;
+package com.wysjwxm.calculator.application;
 
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
-import com.wysjwxm.calculator.core.eval.AstInspection;
-import com.wysjwxm.calculator.core.eval.EvaluationContext;
-import com.wysjwxm.calculator.core.eval.Evaluator;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.core.parser.ExpressionParser;
-import com.wysjwxm.calculator.core.parser.ast.Expression;
-import com.wysjwxm.calculator.store.CalculationHistoryStore;
-import org.springframework.stereotype.Service;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+
+import java.util.Map;
+
+/**
+ * 求值用例的入参。由接口层（防腐层）从 JSON 翻译而来。
+ *
+ * <p>注意 {@code variables} 的键仍是原始字符串 —— 翻译成 {@code VariableName}
+ * 是**用例的职责**，这样保留名校验只有一条通道，两个入口共用。
+ *
+ * @param angleUnit null 表示未指定，取策略缺省值
+ * @param variables 求值期可见的变量（由接口层把已存变量与请求级临时变量合并后传入）
+ */
+public record CalculationCommand(String expression, AngleUnit angleUnit,
+                                 Map<String, CalcNumber> variables) {
+
+    public CalculationCommand {
+        variables = variables == null ? Map.of() : Map.copyOf(variables);
+    }
+
+    public static CalculationCommand of(String expression) {
+        return new CalculationCommand(expression, null, Map.of());
+    }
+}
+```
+
+- [ ] **Step 4: 创建 CalculationUseCase**
+
+创建 `src/main/java/com/wysjwxm/calculator/application/CalculationUseCase.java`：
+
+```java
+package com.wysjwxm.calculator.application;
+
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.calculation.CalculationHistory;
+import com.wysjwxm.calculator.domain.model.expression.Expression;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.expression.eval.AstInspection;
+import com.wysjwxm.calculator.domain.model.expression.eval.EvaluationContext;
+import com.wysjwxm.calculator.domain.model.expression.eval.ExpressionEvaluator;
+import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.variable.VariableName;
 
 import java.util.HashMap;
 import java.util.Map;
 
-@Service
-public class CalculationService {
+/**
+ * 求值用例：编排「校验策略 → 解析 → 求值 → 落历史」。
+ *
+ * <p>本类不含业务规则 —— 算术、优先级、定义域、函数语义都在领域层；
+ * 保留名校验在 {@link VariableName} 的构造器里。这里只做编排与策略施加。
+ */
+public class CalculationUseCase {
 
-    private final FunctionRegistry functions;
-    private final ExpressionParser parser = new ExpressionParser();
-    private final Evaluator evaluator;
-    private final CalculationHistoryStore historyStore;
-    private final VariableService variableService;
-    private final CalculatorProperties properties;
+    private final ExpressionParser parser;
+    private final ExpressionEvaluator evaluator;
+    private final CalculationHistory history;
+    private final CalculationPolicy policy;
 
-    public CalculationService(FunctionRegistry functions, Numbers numbers,
-                              CalculationHistoryStore historyStore,
-                              VariableService variableService,
-                              CalculatorProperties properties) {
-        this.functions = functions;
-        this.evaluator = new Evaluator(functions, numbers);
-        this.historyStore = historyStore;
-        this.variableService = variableService;
-        this.properties = properties;
+    public CalculationUseCase(ExpressionParser parser, ExpressionEvaluator evaluator,
+                              CalculationHistory history, CalculationPolicy policy) {
+        this.parser = parser;
+        this.evaluator = evaluator;
+        this.history = history;
+        this.policy = policy;
     }
 
-    public CalculationOutcome calculate(String expression, AngleUnit angleUnit,
-                                        Map<String, CalcNumber> requestVariables) {
-        String trimmed = validateExpression(expression);
-        Map<String, CalcNumber> variables = validatedRequestVariables(requestVariables);
-
-        AngleUnit effectiveUnit = angleUnit != null ? angleUnit : properties.defaultAngleUnit();
+    public Calculation calculate(CalculationCommand command) {
+        ExpressionText text = buildExpressionText(command.expression());
+        Map<String, CalcNumber> variables = validatedVariables(command.variables());
+        AngleUnit angleUnit = command.angleUnit() != null
+                ? command.angleUnit()
+                : policy.defaultAngleUnit();
 
         long startedAt = System.nanoTime();
-        Expression ast = parser.parse(trimmed);
+        Expression ast = parser.parse(text);
         EvaluationContext context = variables.isEmpty()
                 ? EvaluationContext.empty()
                 : EvaluationContext.of(variables);
-        CalcNumber result = evaluator.evaluate(ast, effectiveUnit, context);
+        CalcNumber result = evaluator.evaluate(ast, angleUnit, context);
         double elapsedMs = (System.nanoTime() - startedAt) / 1_000_000.0;
 
         // angleUnit 仅在表达式真的用到了角度相关函数时才有记录价值（spec §7.3）
-        AngleUnit recordedUnit = AstInspection.usesAngleSensitiveFunction(ast, functions)
-                ? effectiveUnit
+        AngleUnit recordedUnit = AstInspection.usesAngleSensitiveFunction(
+                ast, evaluator.functionRegistry())
+                ? angleUnit
                 : null;
 
-        return new CalculationOutcome(
-                historyStore.append(trimmed, result, recordedUnit, elapsedMs));
-    }
-
-    private String validateExpression(String expression) {
-        if (expression == null) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "expression 不能为空");
-        }
-        String trimmed = expression.trim();
-        if (trimmed.isEmpty()) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "expression 不能为空白");
-        }
-        int max = properties.maxExpressionLength();
-        if (trimmed.length() > max) {
-            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
-                    "expression 长度不得超过 " + max + "，实际为 " + trimmed.length());
-        }
-        return trimmed;
+        return history.append(text, result, recordedUnit, elapsedMs);
     }
 
     /**
-     * 请求级变量走与存储写入完全相同的校验 —— 不用「临时、不落库」当豁免理由。
+     * 表达式长度上限在此强制：它是来自配置的资源保护策略，不是语言不变量，
+     * 因此不属于 ExpressionText 的构造器职责。
      */
-    private Map<String, CalcNumber> validatedRequestVariables(Map<String, CalcNumber> requestVariables) {
-        if (requestVariables == null || requestVariables.isEmpty()) {
+    private ExpressionText buildExpressionText(String raw) {
+        ExpressionText text = new ExpressionText(raw);
+        int limit = policy.maxExpressionLength();
+        if (text.value().length() > limit) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                    "expression 长度不得超过 " + limit + "，实际为 " + text.value().length());
+        }
+        return text;
+    }
+
+    /**
+     * 变量名走 VariableName 构造器 —— 与存储写入完全相同的通道。不为「临时、
+     * 不落库」开口子：同一表达式在不同入口下对 pi 的含义必须一致。
+     */
+    private Map<String, CalcNumber> validatedVariables(Map<String, CalcNumber> raw) {
+        if (raw.isEmpty()) {
             return Map.of();
         }
         Map<String, CalcNumber> validated = new HashMap<>();
-        for (Map.Entry<String, CalcNumber> entry : requestVariables.entrySet()) {
-            variableService.validateVariableName(entry.getKey());
-            validated.put(entry.getKey(), entry.getValue());
+        for (Map.Entry<String, CalcNumber> entry : raw.entrySet()) {
+            VariableName name = new VariableName(entry.getKey());
+            validated.put(name.value(), entry.getValue());
         }
         return validated;
     }
 }
 ```
 
-- [ ] **Step 12: 运行确认通过**
+- [ ] **Step 5: 运行确认通过**
 
-运行：`mvn -q test -Dtest=CalculationServiceTest`
+运行：`mvn -q test -Dtest=CalculationUseCaseTest`
 
-预期：全部 PASS。
+预期：21 个测试 PASS。
 
-- [ ] **Step 13: 运行全部测试**
+**若 `angleUnitIsNullForNonTrigonometricExpressions` 的 `hypot(3,4)` 断言失败**：检查 `BinaryFunction.HYPOT` 的 `angleSensitive()` 是否为 `false`。
+
+- [ ] **Step 6: 写 VariableUseCase 与 HistoryUseCase 失败测试**
+
+创建 `src/test/java/com/wysjwxm/calculator/application/VariableUseCaseTest.java`：
+
+```java
+package com.wysjwxm.calculator.application;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
+import com.wysjwxm.calculator.infrastructure.InMemoryVariableSet;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class VariableUseCaseTest {
+
+    private final VariableUseCase useCase = new VariableUseCase(new InMemoryVariableSet());
+
+    private CalcNumber num(String v) {
+        return new DecimalNumber(new BigDecimal(v));
+    }
+
+    @Test
+    void defineThenGet() {
+        useCase.define("x", num("5"));
+        assertThat(useCase.get("x").value().toDecimal()).isEqualByComparingTo("5");
+    }
+
+    @Test
+    void getUnknownThrowsNotFound() {
+        assertThatThrownBy(() -> useCase.get("nope"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.VARIABLE_NOT_FOUND);
+    }
+
+    @Test
+    void defineIsIdempotentUpsert() {
+        useCase.define("x", num("5"));
+        useCase.define("x", num("6"));
+        assertThat(useCase.list()).hasSize(1);
+        assertThat(useCase.get("x").value().toDecimal()).isEqualByComparingTo("6");
+    }
+
+    @Test
+    void removeUnknownThrowsNotFound() {
+        assertThatThrownBy(() -> useCase.remove("nope"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.VARIABLE_NOT_FOUND);
+    }
+
+    @Test
+    void removeWorks() {
+        useCase.define("x", num("5"));
+        useCase.remove("x");
+        assertThat(useCase.list()).isEmpty();
+    }
+
+    @Test
+    void listIsSortedByName() {
+        useCase.define("zeta", num("1"));
+        useCase.define("alpha", num("2"));
+        assertThat(useCase.list()).extracting(v -> v.name().value())
+                .containsExactly("alpha", "zeta");
+    }
+
+    // ---------- 保留名（spec §6.4） ----------
+
+    @Test
+    void rejectsReservedConstantNames() {
+        assertThatThrownBy(() -> useCase.define("pi", num("3")))
+                .isInstanceOf(CalcException.class)
+                .satisfies(e -> {
+                    CalcException ce = (CalcException) e;
+                    assertThat(ce.code()).isEqualTo(CalcErrorCode.INVALID_REQUEST);
+                    assertThat(ce.getMessage()).contains("pi");
+                });
+        assertThatThrownBy(() -> useCase.define("e", num("3")))
+                .isInstanceOf(CalcException.class);
+    }
+
+    @Test
+    void rejectsFunctionNames() {
+        assertThatThrownBy(() -> useCase.define("sin", num("3")))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void rejectsMalformedNames() {
+        assertThatThrownBy(() -> useCase.define("1abc", num("3"))).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> useCase.define("a-b", num("3"))).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> useCase.define("", num("3"))).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> useCase.define(null, num("3"))).isInstanceOf(CalcException.class);
+    }
+
+    @Test
+    void rejectsOverlongNames() {
+        assertThatThrownBy(() -> useCase.define("x".repeat(65), num("3")))
+                .isInstanceOf(CalcException.class);
+    }
+
+    @Test
+    void rejectionAlsoAppliesToReadAndDelete() {
+        // 保留名在语言里不存在，因此这些请求本身就是非法的，而非「找不到」
+        assertThatThrownBy(() -> useCase.get("pi"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+        assertThatThrownBy(() -> useCase.remove("sin"))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+}
+```
+
+创建 `src/test/java/com/wysjwxm/calculator/application/HistoryUseCaseTest.java`：
+
+```java
+package com.wysjwxm.calculator.application;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import com.wysjwxm.calculator.infrastructure.InMemoryCalculationHistory;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class HistoryUseCaseTest {
+
+    private final InMemoryCalculationHistory history = new InMemoryCalculationHistory(100);
+    private final HistoryUseCase useCase = new HistoryUseCase(history);
+    private final Numbers numbers = new Numbers(34);
+
+    @Test
+    void pageRejectsNegativePage() {
+        assertThatThrownBy(() -> useCase.page(-1, 10))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.INVALID_REQUEST);
+    }
+
+    @Test
+    void pageRejectsSizeOutOfRange() {
+        assertThatThrownBy(() -> useCase.page(0, 0)).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> useCase.page(0, 101)).isInstanceOf(CalcException.class);
+        assertThatThrownBy(() -> useCase.page(0, -5)).isInstanceOf(CalcException.class);
+    }
+
+    @Test
+    void pageAcceptsBoundarySizes() {
+        assertThat(useCase.page(0, 1).size()).isEqualTo(1);
+        assertThat(useCase.page(0, 100).size()).isEqualTo(100);
+    }
+
+    @Test
+    void getUnknownThrowsNotFound() {
+        assertThatThrownBy(() -> useCase.get(42L))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.HISTORY_NOT_FOUND);
+    }
+
+    @Test
+    void getReturnsRecord() {
+        var record = history.append(new ExpressionText("1+1"), numbers.of(2L), null, 0.1);
+        assertThat(useCase.get(record.id())).isEqualTo(record);
+    }
+
+    @Test
+    void clearReportsCount() {
+        history.append(new ExpressionText("1+1"), numbers.of(1L), null, 0.1);
+        history.append(new ExpressionText("2+2"), numbers.of(1L), null, 0.1);
+        assertThat(useCase.clear()).isEqualTo(2);
+    }
+
+    @Test
+    void clearOnEmptyReturnsZero() {
+        assertThat(useCase.clear()).isZero();
+    }
+}
+```
+
+- [ ] **Step 7: 运行确认失败**
+
+运行：`mvn -q test -Dtest='VariableUseCaseTest,HistoryUseCaseTest'`
+
+预期：编译失败，两个用例类不存在。
+
+- [ ] **Step 8: 创建其余两个用例**
+
+创建 `src/main/java/com/wysjwxm/calculator/application/VariableUseCase.java`：
+
+```java
+package com.wysjwxm.calculator.application;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.variable.Variable;
+import com.wysjwxm.calculator.domain.model.variable.VariableName;
+import com.wysjwxm.calculator.domain.model.variable.VariableSet;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 变量用例：编排变量读写。
+ *
+ * <p>原始字符串 → {@link VariableName} 的翻译集中在本类。加上
+ * {@link CalculationUseCase} 里对变量的同款翻译，两条入口都收敛到值对象的
+ * 构造器上 —— 校验不在入口处，在类型里。
+ */
+public class VariableUseCase {
+
+    private final VariableSet variables;
+
+    public VariableUseCase(VariableSet variables) {
+        this.variables = variables;
+    }
+
+    public Variable define(String rawName, CalcNumber value) {
+        return variables.define(new VariableName(rawName), value);
+    }
+
+    public Variable get(String rawName) {
+        VariableName name = new VariableName(rawName);
+        return variables.find(name).orElseThrow(() -> CalcException.of(
+                CalcErrorCode.VARIABLE_NOT_FOUND, "变量不存在: " + name.value()));
+    }
+
+    public List<Variable> list() {
+        return variables.all();
+    }
+
+    public void remove(String rawName) {
+        VariableName name = new VariableName(rawName);
+        if (!variables.remove(name)) {
+            throw CalcException.of(CalcErrorCode.VARIABLE_NOT_FOUND, "变量不存在: " + name.value());
+        }
+    }
+
+    /** 供求值入口把已存变量并入求值上下文。 */
+    public Map<String, CalcNumber> snapshot() {
+        return variables.all().stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        v -> v.name().value(), Variable::value));
+    }
+}
+```
+
+创建 `src/main/java/com/wysjwxm/calculator/application/HistoryUseCase.java`：
+
+```java
+package com.wysjwxm.calculator.application;
+
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.calculation.CalculationHistory;
+import com.wysjwxm.calculator.domain.model.calculation.PageResult;
+
+/**
+ * 历史用例：分页参数校验与查询。
+ */
+public class HistoryUseCase {
+
+    private static final int MIN_PAGE_SIZE = 1;
+    private static final int MAX_PAGE_SIZE = 100;
+
+    private final CalculationHistory history;
+
+    public HistoryUseCase(CalculationHistory history) {
+        this.history = history;
+    }
+
+    public PageResult<Calculation> page(int page, int size) {
+        if (page < 0) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "page 不能为负数: " + page);
+        }
+        if (size < MIN_PAGE_SIZE || size > MAX_PAGE_SIZE) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                    "size 必须在 " + MIN_PAGE_SIZE + " 到 " + MAX_PAGE_SIZE + " 之间，实际为 " + size);
+        }
+        return history.page(page, size);
+    }
+
+    public Calculation get(long id) {
+        return history.find(id).orElseThrow(() -> CalcException.of(
+                CalcErrorCode.HISTORY_NOT_FOUND, "历史记录不存在: " + id));
+    }
+
+    public int clear() {
+        return history.clear();
+    }
+}
+```
+
+- [ ] **Step 9: 运行确认通过**
+
+运行：`mvn -q test -Dtest='VariableUseCaseTest,HistoryUseCaseTest'`
+
+预期：18 个测试全部 PASS。
+
+- [ ] **Step 10: 创建装配配置**
+
+创建 `src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorConfiguration.java`：
+
+```java
+package com.wysjwxm.calculator.infrastructure.config;
+
+import com.wysjwxm.calculator.application.CalculationPolicy;
+import com.wysjwxm.calculator.application.CalculationUseCase;
+import com.wysjwxm.calculator.application.HistoryUseCase;
+import com.wysjwxm.calculator.application.VariableUseCase;
+import com.wysjwxm.calculator.domain.model.calculation.CalculationHistory;
+import com.wysjwxm.calculator.domain.model.expression.eval.ExpressionEvaluator;
+import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import com.wysjwxm.calculator.domain.model.variable.VariableSet;
+import com.wysjwxm.calculator.infrastructure.InMemoryCalculationHistory;
+import com.wysjwxm.calculator.infrastructure.InMemoryVariableSet;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * 唯一的 Bean 装配点。
+ *
+ * <p>为什么装配集中在这里、而不是给每个类加 {@code @Service} / {@code @Repository}：
+ * 领域层的类**不允许** import Spring，所以它们本来就不能加注解；若只给基础设施层
+ * 加注解、领域层走 @Bean，装配点就散成了两处。集中在一处之后，「谁被注册成 Bean」
+ * 有唯一答案。
+ *
+ * <p>这里同时承担翻译职责：把基础设施的 {@link CalculatorProperties} 翻译成
+ * 领域与应用能用的对象，因此 application 层不必认识配置类。
+ */
+@Configuration
+@EnableConfigurationProperties(CalculatorProperties.class)
+public class CalculatorConfiguration {
+
+    @Bean
+    public Numbers numbers(CalculatorProperties properties) {
+        return new Numbers(properties.divisionPrecision());
+    }
+
+    @Bean
+    public FunctionRegistry functionRegistry() {
+        return new FunctionRegistry();
+    }
+
+    @Bean
+    public ExpressionParser expressionParser() {
+        // 无状态，可安全作为单例共享
+        return new ExpressionParser();
+    }
+
+    @Bean
+    public ExpressionEvaluator expressionEvaluator(FunctionRegistry functionRegistry,
+                                                   Numbers numbers) {
+        return new ExpressionEvaluator(functionRegistry, numbers);
+    }
+
+    @Bean
+    public CalculationPolicy calculationPolicy(CalculatorProperties properties) {
+        return new CalculationPolicy(properties.defaultAngleUnit(),
+                properties.maxExpressionLength());
+    }
+
+    @Bean
+    public VariableSet variableSet() {
+        return new InMemoryVariableSet();
+    }
+
+    @Bean
+    public CalculationHistory calculationHistory(CalculatorProperties properties) {
+        return new InMemoryCalculationHistory(properties.historyCapacity());
+    }
+
+    @Bean
+    public CalculationUseCase calculationUseCase(ExpressionParser expressionParser,
+                                                 ExpressionEvaluator expressionEvaluator,
+                                                 CalculationHistory calculationHistory,
+                                                 CalculationPolicy calculationPolicy) {
+        return new CalculationUseCase(expressionParser, expressionEvaluator,
+                calculationHistory, calculationPolicy);
+    }
+
+    @Bean
+    public VariableUseCase variableUseCase(VariableSet variableSet) {
+        return new VariableUseCase(variableSet);
+    }
+
+    @Bean
+    public HistoryUseCase historyUseCase(CalculationHistory calculationHistory) {
+        return new HistoryUseCase(calculationHistory);
+    }
+}
+```
+
+- [ ] **Step 11: 运行上下文加载测试**
+
+运行：`mvn -q test -Dtest=ScientificCalculatorApplicationTests`
+
+预期：PASS。**若报找不到 bean**：检查 `CalculationUseCase` 等是否需要 `@Component` —— 它们由上面的 `@Bean` 方法产出，不应再加注解。
+
+- [ ] **Step 12: 运行全部测试**
 
 运行：`mvn -q test`
 
 预期：全部 PASS。
 
-- [ ] **Step 14: 提交**
+- [ ] **Step 13: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/service/ \
-        src/test/java/com/wysjwxm/calculator/service/
-git commit -m "feat: 服务层 — 计算编排、历史分页、变量保留名校验"
+git add src/main/java/com/wysjwxm/calculator/application/ \
+        src/main/java/com/wysjwxm/calculator/infrastructure/config/CalculatorConfiguration.java \
+        src/test/java/com/wysjwxm/calculator/application/
+git commit -m "feat: 应用层三个用例与集中在 CalculatorConfiguration 的 Bean 装配"
 ```
 
 ---
 
-### Task 12: 错误响应与全局异常处理
+### Task 13: 接口层错误处理
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/api/error/ErrorResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/error/ErrorStatusMapper.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/error/GlobalExceptionHandler.java`
-- Test: `src/test/java/com/wysjwxm/calculator/api/error/ErrorStatusMapperTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/error/ErrorResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/error/ErrorStatusMapper.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/error/GlobalExceptionHandler.java`
+- Test: `src/test/java/com/wysjwxm/calculator/interfaces/error/ErrorStatusMapperTest.java`
 
 **Interfaces:**
 - Consumes: `CalcErrorCode`、`CalcException`（Task 2）
 - Produces:
   - `record ErrorResponse(String code, String message, Integer position, Instant timestamp, String path)`
   - `ErrorStatusMapper.toStatus(CalcErrorCode code)` → `HttpStatus`
-  - `GlobalExceptionHandler`：`@RestControllerAdvice`，处理 `CalcException`、`NoHandlerFoundException`、`HttpRequestMethodNotSupportedException`、`HttpMessageNotReadableException`、`MethodArgumentTypeMismatchException`、`Exception`
+  - `GlobalExceptionHandler`（`@RestControllerAdvice`）
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/api/error/ErrorStatusMapperTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/interfaces/error/ErrorStatusMapperTest.java`：
 
 ```java
-package com.wysjwxm.calculator.api.error;
+package com.wysjwxm.calculator.interfaces.error;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
@@ -4622,8 +5389,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 错误码 → HTTP 状态的映射必须覆盖全部枚举值。
- * 这条测试是防止「新增错误码却忘了给状态」的守门人 ——
- * 没有它，漏映射的错误会在运行时才以 500 的形式暴露。
+ *
+ * <p>这条测试是防漂移的守门人：映射表与枚举分处两个包，若无人看守，
+ * 新增错误码会静默退化成 500 —— 而不是在编译期或测试期暴露。
  */
 class ErrorStatusMapperTest {
 
@@ -4652,20 +5420,26 @@ class ErrorStatusMapperTest {
 
     @Test
     void semanticErrorsMapTo422() {
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.UNKNOWN_VARIABLE)).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.DIVISION_BY_ZERO)).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.DOMAIN_ERROR)).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.NON_FINITE_RESULT)).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.UNKNOWN_VARIABLE))
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.DIVISION_BY_ZERO))
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.DOMAIN_ERROR))
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.NON_FINITE_RESULT))
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
     }
 
     @Test
     void methodNotAllowedMapsTo405() {
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.METHOD_NOT_ALLOWED)).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.METHOD_NOT_ALLOWED))
+                .isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
     }
 
     @Test
     void internalErrorMapsTo500() {
-        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.INTERNAL_ERROR)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(ErrorStatusMapper.toStatus(CalcErrorCode.INTERNAL_ERROR))
+                .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }
 ```
@@ -4676,20 +5450,20 @@ class ErrorStatusMapperTest {
 
 预期：编译失败，`ErrorStatusMapper` 不存在。
 
-- [ ] **Step 3: 创建 ErrorResponse**
+- [ ] **Step 3: 创建 ErrorResponse 与 ErrorStatusMapper**
 
-创建 `src/main/java/com/wysjwxm/calculator/api/error/ErrorResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/error/ErrorResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.error;
+package com.wysjwxm.calculator.interfaces.error;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.time.Instant;
 
 /**
- * @param position 仅语法类错误有值，其余为 null；用 JsonInclude 让无位置的
- *                 响应里不出现该字段，避免调用方误判为 0
+ * @param position 仅语法类错误有值，其余为 null；用 JsonInclude 让无位置的响应里
+ *                 不出现该字段，避免调用方误判为 0
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ErrorResponse(String code, String message, Integer position,
@@ -4697,21 +5471,19 @@ public record ErrorResponse(String code, String message, Integer position,
 }
 ```
 
-- [ ] **Step 4: 创建 ErrorStatusMapper**
-
-创建 `src/main/java/com/wysjwxm/calculator/api/error/ErrorStatusMapper.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/error/ErrorStatusMapper.java`：
 
 ```java
-package com.wysjwxm.calculator.api.error;
+package com.wysjwxm.calculator.interfaces.error;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
 import org.springframework.http.HttpStatus;
 
 /**
  * 错误码 → HTTP 状态的唯一映射点。
  *
- * <p>core 层的 {@link CalcErrorCode} 刻意不携带 HTTP 状态，以保持对传输协议
- * 无感知；映射集中在这里，由 ErrorStatusMapperTest 保证不漏。
+ * <p>领域层的 {@link CalcErrorCode} 刻意不携带 HTTP 状态，以保持对传输协议无感知；
+ * 映射集中在这里，由 ErrorStatusMapperTest 保证不漏。
  */
 public final class ErrorStatusMapper {
 
@@ -4731,15 +5503,15 @@ public final class ErrorStatusMapper {
 }
 ```
 
-- [ ] **Step 5: 创建 GlobalExceptionHandler**
+- [ ] **Step 4: 创建 GlobalExceptionHandler**
 
-创建 `src/main/java/com/wysjwxm/calculator/api/error/GlobalExceptionHandler.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/error/GlobalExceptionHandler.java`：
 
 ```java
-package com.wysjwxm.calculator.api.error;
+package com.wysjwxm.calculator.interfaces.error;
 
-import com.wysjwxm.calculator.core.error.CalcErrorCode;
-import com.wysjwxm.calculator.core.error.CalcException;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -4756,7 +5528,8 @@ import java.time.Instant;
 /**
  * 全局异常处理。所有错误响应走同一个结构（spec §7.6）。
  *
- * <p>不依赖 Spring 默认错误页 —— application.yaml 已关闭 whitelabel。
+ * <p>不依赖 Spring 默认错误页 —— application.yaml 已关闭 whitelabel，并开启了
+ * throw-exception-if-no-handler-found。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -4813,85 +5586,71 @@ public class GlobalExceptionHandler {
 }
 ```
 
-- [ ] **Step 6: 配置 404 抛出异常**
-
-修改 `src/main/resources/application.yaml`，在 `spring` 下加入：
-
-```yaml
-spring:
-  application:
-    name: scientific-calculator
-  mvc:
-    throw-exception-if-no-handler-found: true
-  web:
-    resources:
-      add-mappings: false
-```
-
-（其余段落保持不变。）这两项是让 `NoHandlerFoundException` 生效、并关掉静态资源兜底的必要配置。
-
-- [ ] **Step 7: 运行确认通过**
+- [ ] **Step 5: 运行确认通过**
 
 运行：`mvn -q test -Dtest=ErrorStatusMapperTest`
 
 预期：6 个测试 PASS。
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/api/error/ \
-        src/main/resources/application.yaml \
-        src/test/java/com/wysjwxm/calculator/api/error/
-git commit -m "feat: 统一错误响应与全局异常处理，含错误码状态映射覆盖率测试"
+git add src/main/java/com/wysjwxm/calculator/interfaces/error/ \
+        src/test/java/com/wysjwxm/calculator/interfaces/error/
+git commit -m "feat: 接口层错误响应、状态映射与全局异常处理"
 ```
 
 ---
 
-### Task 13: HTTP 接口
+### Task 14: 接口层 HTTP 端点
+
+`interfaces` 同时是防腐层：JSON DTO ↔ 领域对象，两侧不互相渗透（DTO 不进领域，领域类型不直接当传输契约）。
 
 **Files:**
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/CalcNumberSerializer.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/CalculateRequest.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/CalculateResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/FunctionsResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/HistoryItemResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/HistoryPageResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/PutVariableRequest.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/VariableResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/VariableListResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/ClearHistoryResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/dto/HealthResponse.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/CalculatorController.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/HistoryController.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/VariableController.java`
-- Create: `src/main/java/com/wysjwxm/calculator/api/MetaController.java`
-- Test: `src/test/java/com/wysjwxm/calculator/api/CalculatorControllerTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/api/HistoryControllerTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/api/VariableControllerTest.java`
-- Test: `src/test/java/com/wysjwxm/calculator/api/MetaControllerTest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalcNumberSerializer.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalculateRequest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalculateResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/FunctionsResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/HistoryItemResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/HistoryPageResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/PutVariableRequest.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/VariableResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/VariableListResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/ClearHistoryResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/dto/HealthResponse.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/CalculatorController.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/HistoryController.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/VariableController.java`
+- Create: `src/main/java/com/wysjwxm/calculator/interfaces/MetaController.java`
+- Test: `src/test/java/com/wysjwxm/calculator/interfaces/CalculatorControllerTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/interfaces/HistoryControllerTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/interfaces/VariableControllerTest.java`
+- Test: `src/test/java/com/wysjwxm/calculator/interfaces/MetaControllerTest.java`
 
 **Interfaces:**
-- Consumes: `CalculationService`、`HistoryService`、`VariableService`（Task 11）、`ProfileResult`/`HistoryRecord`/`VariableRecord`（Task 9/10）、`OperatorTable`、`FunctionRegistry`、`Constants`（Task 5/7）、`CalculatorProperties`（Task 1）、`GlobalExceptionHandler`（Task 12）
-- Produces: 10 个 HTTP 端点（见 spec §3.1）
+- Consumes: 三个 UseCase、`CalculationPolicy`（Task 12）、`OperatorTable`（Task 5）、`FunctionRegistry`、`ReservedNames`（Task 7）、`MathematicalConstant`（Task 7）、`GlobalExceptionHandler`（Task 13）
+- Produces: 10 个 HTTP 端点（spec §3.1）
 
 - [ ] **Step 1: 创建 CalcNumberSerializer**
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/CalcNumberSerializer.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalcNumberSerializer.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.SerializerProvider;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
 
 import java.io.IOException;
 
 /**
- * 把 CalcNumber 序列化为 JSON 数字：精确路径写 BigDecimal（Jackson 会
- * 输出 0.3 而非 0.30000000000000004），浮点路径写 double。
+ * 把 CalcNumber 序列化为 JSON 数字：精确路径写 BigDecimal（Jackson 输出 0.3
+ * 而非 0.30000000000000004），浮点路径写 double。
+ *
+ * <p>这是防腐层的一部分：领域值对象不直接暴露给 Jackson 的默认序列化。
  */
 public class CalcNumberSerializer extends JsonSerializer<CalcNumber> {
 
@@ -4909,33 +5668,33 @@ public class CalcNumberSerializer extends JsonSerializer<CalcNumber> {
 
 - [ ] **Step 2: 创建全部 DTO**
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/CalculateRequest.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalculateRequest.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
-import com.wysjwxm.calculator.core.AngleUnit;
+import com.wysjwxm.calculator.domain.AngleUnit;
 
 import java.math.BigDecimal;
 import java.util.Map;
 
 /**
- * @param variables 请求级临时变量，仅本次求值生效、不落库；
- *                  键同样受保留名约束
+ * @param variables 请求级临时变量，仅本次求值生效、不落库；键同样受保留名约束
  */
 public record CalculateRequest(String expression, AngleUnit angleUnit,
                                Map<String, BigDecimal> variables) {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/CalculateResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/CalculateResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 public record CalculateResponse(
         String expression,
@@ -4944,24 +5703,34 @@ public record CalculateResponse(
         AngleUnit angleUnit,
         long historyId,
         double elapsedMs) {
+
+    public static CalculateResponse from(Calculation calculation) {
+        return new CalculateResponse(
+                calculation.expression().value(),
+                calculation.result(),
+                calculation.result().isExact() ? "DECIMAL" : "FLOATING",
+                calculation.angleUnit(),
+                calculation.id(),
+                calculation.elapsedMs());
+    }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/FunctionsResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/FunctionsResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.operator.Associativity;
-import com.wysjwxm.calculator.core.operator.Fixity;
-import com.wysjwxm.calculator.core.operator.Operator;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.expression.Associativity;
+import com.wysjwxm.calculator.domain.model.expression.Fixity;
+import com.wysjwxm.calculator.domain.model.expression.Operator;
 
 import java.util.List;
 import java.util.Set;
 
 /**
- * 服务能力清单，如实描述接受的表达式语法（spec §7.2）。
+ * 服务能力清单，如实描述本服务接受的表达式语法（spec §7.2）。
  * operators 由 OperatorTable 直接生成，因此不可能与实际解析行为漂移。
  */
 public record FunctionsResponse(
@@ -4986,15 +5755,15 @@ public record FunctionsResponse(
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/HistoryItemResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/HistoryItemResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.store.HistoryRecord;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.time.Instant;
 
@@ -5007,32 +5776,33 @@ public record HistoryItemResponse(
         double elapsedMs,
         Instant createdAt) {
 
-    public static HistoryItemResponse from(HistoryRecord record) {
+    public static HistoryItemResponse from(Calculation calculation) {
         return new HistoryItemResponse(
-                record.id(),
-                record.expression(),
-                record.result(),
-                record.result().isExact() ? "DECIMAL" : "FLOATING",
-                record.angleUnit(),
-                record.elapsedMs(),
-                record.createdAt());
+                calculation.id(),
+                calculation.expression().value(),
+                calculation.result(),
+                calculation.result().isExact() ? "DECIMAL" : "FLOATING",
+                calculation.angleUnit(),
+                calculation.elapsedMs(),
+                calculation.createdAt());
     }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/HistoryPageResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/HistoryPageResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
-import com.wysjwxm.calculator.store.PageResult;
+import com.wysjwxm.calculator.domain.model.calculation.Calculation;
+import com.wysjwxm.calculator.domain.model.calculation.PageResult;
 
 import java.util.List;
 
 public record HistoryPageResponse(List<HistoryItemResponse> items, int page, int size,
                                   long totalElements, int totalPages, boolean hasNext) {
 
-    public static HistoryPageResponse from(PageResult<com.wysjwxm.calculator.store.HistoryRecord> page) {
+    public static HistoryPageResponse from(PageResult<Calculation> page) {
         return new HistoryPageResponse(
                 page.items().stream().map(HistoryItemResponse::from).toList(),
                 page.page(), page.size(), page.totalElements(), page.totalPages(), page.hasNext());
@@ -5040,10 +5810,10 @@ public record HistoryPageResponse(List<HistoryItemResponse> items, int page, int
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/PutVariableRequest.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/PutVariableRequest.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import java.math.BigDecimal;
 
@@ -5051,14 +5821,14 @@ public record PutVariableRequest(BigDecimal value) {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/VariableResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/VariableResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.store.VariableRecord;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.variable.Variable;
 
 import java.time.Instant;
 
@@ -5067,17 +5837,17 @@ public record VariableResponse(String name,
                                Instant createdAt,
                                Instant updatedAt) {
 
-    public static VariableResponse from(VariableRecord record) {
-        return new VariableResponse(record.name(), record.value(),
-                record.createdAt(), record.updatedAt());
+    public static VariableResponse from(Variable variable) {
+        return new VariableResponse(variable.name().value(), variable.value(),
+                variable.createdAt(), variable.updatedAt());
     }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/VariableListResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/VariableListResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 import java.util.List;
 
@@ -5085,96 +5855,102 @@ public record VariableListResponse(List<VariableResponse> items, int total) {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/ClearHistoryResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/ClearHistoryResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 public record ClearHistoryResponse(int deleted) {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/dto/HealthResponse.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/dto/HealthResponse.java`：
 
 ```java
-package com.wysjwxm.calculator.api.dto;
+package com.wysjwxm.calculator.interfaces.dto;
 
 public record HealthResponse(String status, long uptimeMs) {
 }
 ```
 
-- [ ] **Step 3: 创建 4 个 Controller**
+- [ ] **Step 3: 创建四个 Controller**
 
-创建 `src/main/java/com/wysjwxm/calculator/api/CalculatorController.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/CalculatorController.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.dto.CalculateRequest;
-import com.wysjwxm.calculator.api.dto.CalculateResponse;
-import com.wysjwxm.calculator.api.dto.FunctionsResponse;
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.Constants;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.CalcNumber;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.core.operator.OperatorTable;
-import com.wysjwxm.calculator.service.CalculationOutcome;
-import com.wysjwxm.calculator.service.CalculationService;
-import com.wysjwxm.calculator.store.HistoryRecord;
+import com.wysjwxm.calculator.application.CalculationCommand;
+import com.wysjwxm.calculator.application.CalculationPolicy;
+import com.wysjwxm.calculator.application.CalculationUseCase;
+import com.wysjwxm.calculator.application.VariableUseCase;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.MathematicalConstant;
+import com.wysjwxm.calculator.domain.model.expression.OperatorTable;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
+import com.wysjwxm.calculator.interfaces.dto.CalculateRequest;
+import com.wysjwxm.calculator.interfaces.dto.CalculateResponse;
+import com.wysjwxm.calculator.interfaces.dto.FunctionsResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 求值与能力清单端点。
+ *
+ * <p>本类承担防腐层职责：把 JSON DTO 翻译成应用层命令，再把领域对象翻译回
+ * 响应 DTO。领域类型不直接充当传输契约。
+ */
 @RestController
 @RequestMapping("/api/v1/calculator")
 public class CalculatorController {
 
-    private final CalculationService calculationService;
+    private final CalculationUseCase calculationUseCase;
+    private final VariableUseCase variableUseCase;
     private final FunctionRegistry functionRegistry;
-    private final CalculatorProperties properties;
+    private final CalculationPolicy policy;
 
-    public CalculatorController(CalculationService calculationService,
+    public CalculatorController(CalculationUseCase calculationUseCase,
+                                VariableUseCase variableUseCase,
                                 FunctionRegistry functionRegistry,
-                                CalculatorProperties properties) {
-        this.calculationService = calculationService;
+                                CalculationPolicy policy) {
+        this.calculationUseCase = calculationUseCase;
+        this.variableUseCase = variableUseCase;
         this.functionRegistry = functionRegistry;
-        this.properties = properties;
+        this.policy = policy;
     }
 
     @PostMapping("/calculate")
     public CalculateResponse calculate(@RequestBody CalculateRequest request) {
-        CalculationOutcome outcome = calculationService.calculate(
-                request.expression(), request.angleUnit(), toCalcNumbers(request.variables()));
-        HistoryRecord record = outcome.record();
-        return new CalculateResponse(
-                record.expression(),
-                record.result(),
-                record.result().isExact() ? "DECIMAL" : "FLOATING",
-                record.angleUnit(),
-                record.id(),
-                record.elapsedMs());
+        // 已存变量与请求级变量在此合并；请求级同名变量优先覆盖
+        Map<String, CalcNumber> variables = new LinkedHashMap<>(variableUseCase.snapshot());
+        variables.putAll(toCalcNumbers(request.variables()));
+        CalculationCommand command = new CalculationCommand(
+                request.expression(), request.angleUnit(), variables);
+        return CalculateResponse.from(calculationUseCase.calculate(command));
     }
 
     @GetMapping("/functions")
     public FunctionsResponse functions() {
         return new FunctionsResponse(
-                Constants.names(),
+                MathematicalConstant.names(),
                 functionRegistry.unaryNames(),
                 functionRegistry.binaryNames(),
                 OperatorTable.all().stream().map(FunctionsResponse.OperatorEntry::from).toList(),
                 List.of(AngleUnit.values()),
-                properties.defaultAngleUnit());
+                policy.defaultAngleUnit());
     }
 
-    private Map<String, CalcNumber> toCalcNumbers(Map<String, java.math.BigDecimal> raw) {
+    private Map<String, CalcNumber> toCalcNumbers(Map<String, BigDecimal> raw) {
         if (raw == null || raw.isEmpty()) {
             return Map.of();
         }
@@ -5185,15 +5961,15 @@ public class CalculatorController {
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/HistoryController.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/HistoryController.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.dto.ClearHistoryResponse;
-import com.wysjwxm.calculator.api.dto.HistoryItemResponse;
-import com.wysjwxm.calculator.api.dto.HistoryPageResponse;
-import com.wysjwxm.calculator.service.HistoryService;
+import com.wysjwxm.calculator.application.HistoryUseCase;
+import com.wysjwxm.calculator.interfaces.dto.ClearHistoryResponse;
+import com.wysjwxm.calculator.interfaces.dto.HistoryItemResponse;
+import com.wysjwxm.calculator.interfaces.dto.HistoryPageResponse;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -5205,40 +5981,42 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/history")
 public class HistoryController {
 
-    private final HistoryService historyService;
+    private final HistoryUseCase historyUseCase;
 
-    public HistoryController(HistoryService historyService) {
-        this.historyService = historyService;
+    public HistoryController(HistoryUseCase historyUseCase) {
+        this.historyUseCase = historyUseCase;
     }
 
     @GetMapping
     public HistoryPageResponse page(@RequestParam(defaultValue = "0") int page,
                                     @RequestParam(defaultValue = "20") int size) {
-        return HistoryPageResponse.from(historyService.page(page, size));
+        return HistoryPageResponse.from(historyUseCase.page(page, size));
     }
 
     @GetMapping("/{id}")
     public HistoryItemResponse get(@PathVariable long id) {
-        return HistoryItemResponse.from(historyService.get(id));
+        return HistoryItemResponse.from(historyUseCase.get(id));
     }
 
     @DeleteMapping
     public ClearHistoryResponse clear() {
-        return new ClearHistoryResponse(historyService.clear());
+        return new ClearHistoryResponse(historyUseCase.clear());
     }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/VariableController.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/VariableController.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.dto.PutVariableRequest;
-import com.wysjwxm.calculator.api.dto.VariableListResponse;
-import com.wysjwxm.calculator.api.dto.VariableResponse;
-import com.wysjwxm.calculator.core.number.DecimalNumber;
-import com.wysjwxm.calculator.service.VariableService;
+import com.wysjwxm.calculator.application.VariableUseCase;
+import com.wysjwxm.calculator.domain.error.CalcErrorCode;
+import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
+import com.wysjwxm.calculator.interfaces.dto.PutVariableRequest;
+import com.wysjwxm.calculator.interfaces.dto.VariableListResponse;
+import com.wysjwxm.calculator.interfaces.dto.VariableResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -5250,59 +6028,55 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/variables")
 public class VariableController {
 
-    private final VariableService variableService;
+    private final VariableUseCase variableUseCase;
 
-    public VariableController(VariableService variableService) {
-        this.variableService = variableService;
+    public VariableController(VariableUseCase variableUseCase) {
+        this.variableUseCase = variableUseCase;
     }
 
     /** 幂等 upsert —— 覆盖已存在变量同样返回 200，保持 PUT 语义。 */
     @PutMapping("/{name}")
     public VariableResponse put(@PathVariable String name, @RequestBody PutVariableRequest request) {
         BigDecimal value = request == null ? null : request.value();
-        return VariableResponse.from(variableService.put(name, requireNumber(value)));
+        if (value == null) {
+            throw CalcException.of(CalcErrorCode.INVALID_REQUEST, "value 不能为空");
+        }
+        return VariableResponse.from(variableUseCase.define(name, new DecimalNumber(value)));
     }
 
     @GetMapping
     public VariableListResponse list() {
-        var records = variableService.list();
-        return new VariableListResponse(
-                records.stream().map(VariableResponse::from).toList(), records.size());
+        List<VariableResponse> items = variableUseCase.list().stream()
+                .map(VariableResponse::from)
+                .toList();
+        return new VariableListResponse(items, items.size());
     }
 
     @GetMapping("/{name}")
     public VariableResponse get(@PathVariable String name) {
-        return VariableResponse.from(variableService.get(name));
+        return VariableResponse.from(variableUseCase.get(name));
     }
 
     @DeleteMapping("/{name}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable String name) {
-        variableService.delete(name);
-    }
-
-    private DecimalNumber requireNumber(BigDecimal value) {
-        if (value == null) {
-            throw com.wysjwxm.calculator.core.error.CalcException.of(
-                    com.wysjwxm.calculator.core.error.CalcErrorCode.INVALID_REQUEST,
-                    "value 不能为空");
-        }
-        return new DecimalNumber(value);
+        variableUseCase.remove(name);
     }
 }
 ```
 
-创建 `src/main/java/com/wysjwxm/calculator/api/MetaController.java`：
+创建 `src/main/java/com/wysjwxm/calculator/interfaces/MetaController.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.dto.HealthResponse;
+import com.wysjwxm.calculator.interfaces.dto.HealthResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -5325,34 +6099,40 @@ public class MetaController {
 
 - [ ] **Step 4: 写 CalculatorController 测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/api/CalculatorControllerTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/interfaces/CalculatorControllerTest.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.error.GlobalExceptionHandler;
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.service.CalculationService;
-import com.wysjwxm.calculator.service.VariableService;
-import com.wysjwxm.calculator.store.InMemoryCalculationHistoryStore;
-import com.wysjwxm.calculator.store.InMemoryVariableStore;
+import com.wysjwxm.calculator.application.CalculationPolicy;
+import com.wysjwxm.calculator.application.CalculationUseCase;
+import com.wysjwxm.calculator.application.VariableUseCase;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.expression.eval.ExpressionEvaluator;
+import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
+import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import com.wysjwxm.calculator.infrastructure.InMemoryCalculationHistory;
+import com.wysjwxm.calculator.infrastructure.InMemoryVariableSet;
+import com.wysjwxm.calculator.interfaces.error.GlobalExceptionHandler;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 用 standaloneSetup 而非 @WebMvcTest：避免为每个测试加载 Spring 上下文，
- * 同时把 GlobalExceptionHandler 显式挂上，错误码路径才被真实覆盖。
+ * 用 standaloneSetup 而非 @WebMvcTest：控制器行为几乎不依赖容器特性，
+ * standaloneSetup 更快，且能**显式挂载 GlobalExceptionHandler** ——
+ * 错误码路径因此被真实覆盖，而不是依赖切片扫描恰好扫到它。
  */
 class CalculatorControllerTest {
 
@@ -5361,22 +6141,31 @@ class CalculatorControllerTest {
     @BeforeEach
     void setUp() {
         FunctionRegistry registry = new FunctionRegistry();
-        CalculatorProperties props = new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, 100);
-        InMemoryCalculationHistoryStore history = new InMemoryCalculationHistoryStore(props);
-        VariableService variableService = new VariableService(new InMemoryVariableStore(), registry);
-        CalculationService service = new CalculationService(
-                registry, new Numbers(34), history, variableService, props);
+        Numbers numbers = new Numbers(34);
+        CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000);
+        CalculationUseCase useCase = new CalculationUseCase(
+                new ExpressionParser(),
+                new ExpressionEvaluator(registry, numbers),
+                new InMemoryCalculationHistory(100),
+                policy);
+        VariableUseCase variableUseCase = new VariableUseCase(new InMemoryVariableSet());
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new CalculatorController(service, registry, props))
+                .standaloneSetup(new CalculatorController(useCase, variableUseCase, registry, policy))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
 
+    private ResultActions post(String body) throws Exception {
+        return mockMvc.perform(post("/api/v1/calculator/calculate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    // ---------- 正常路径 ----------
+
     @Test
     void calculatesExpression() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"1+2*3\"}"))
+        post("{\"expression\":\"1+2*3\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.result").value(7))
                 .andExpect(jsonPath("$.resultType").value("DECIMAL"))
@@ -5386,9 +6175,7 @@ class CalculatorControllerTest {
 
     @Test
     void specAcceptanceExpressionReturnsOnePointFive() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"1 + 2 * sin(30) ^ 2\"}"))
+        post("{\"expression\":\"1 + 2 * sin(30) ^ 2\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.result").value(1.5))
                 .andExpect(jsonPath("$.angleUnit").value("DEGREE"));
@@ -5397,38 +6184,73 @@ class CalculatorControllerTest {
     @Test
     void decimalPrecisionSurvivesSerialization() throws Exception {
         // 0.1+0.2 必须序列化成 0.3，而不是 0.30000000000000004
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"0.1+0.2\"}"))
+        post("{\"expression\":\"0.1+0.2\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.result").value(0.3));
     }
 
     @Test
+    void powerAssociativitySurvivesTheWire() throws Exception {
+        post("{\"expression\":\"2^3^2\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value(512));
+    }
+
+    @Test
+    void unaryMinusBindsLooserThanPowerOverTheWire() throws Exception {
+        post("{\"expression\":\"-2^2\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value(-4));
+    }
+
+    @Test
     void angleUnitIsNullForNonTrigExpression() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"1+2\"}"))
+        post("{\"expression\":\"1+2\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.angleUnit").doesNotExist());
     }
 
     @Test
     void radianAngleUnitIsHonoured() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"sin(30)\",\"angleUnit\":\"RADIAN\"}"))
+        post("{\"expression\":\"sin(30)\",\"angleUnit\":\"RADIAN\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.angleUnit").value("RADIAN"));
+    }
+
+    @Test
+    void requestVariablesAreUsable() throws Exception {
+        post("{\"expression\":\"x*2\",\"variables\":{\"x\":7}}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value(14));
+    }
+
+    @Test
+    void storedVariablesAreVisibleToEvaluation() throws Exception {
+        mockMvc.perform(put("/api/v1/variables/y")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":5}"))
+                .andExpect(status().isOk());
+        post("{\"expression\":\"y*2+1\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value(11));
+    }
+
+    @Test
+    void requestVariableOverridesStoredVariable() throws Exception {
+        mockMvc.perform(put("/api/v1/variables/x")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":5}"))
+                .andExpect(status().isOk());
+        post("{\"expression\":\"x\",\"variables\":{\"x\":9}}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value(9));
     }
 
     // ---------- 错误码 ----------
 
     @Test
     void parseErrorReturns400WithPosition() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"1+\"}"))
+        post("{\"expression\":\"1+\"}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("PARSE_ERROR"))
                 .andExpect(jsonPath("$.position").value(2))
@@ -5437,9 +6259,7 @@ class CalculatorControllerTest {
 
     @Test
     void divisionByZeroReturns422() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"1/0\"}"))
+        post("{\"expression\":\"1/0\"}")
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("DIVISION_BY_ZERO"))
                 .andExpect(jsonPath("$.position").doesNotExist());
@@ -5447,56 +6267,44 @@ class CalculatorControllerTest {
 
     @Test
     void domainErrorReturns422() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"sqrt(-1)\"}"))
+        post("{\"expression\":\"sqrt(-1)\"}")
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("DOMAIN_ERROR"));
     }
 
     @Test
     void unknownFunctionReturns400() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"nope(1)\"}"))
+        post("{\"expression\":\"nope(1)\"}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("UNKNOWN_FUNCTION"));
     }
 
     @Test
     void unknownVariableReturns422() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"y+1\"}"))
+        post("{\"expression\":\"y+1\"}")
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("UNKNOWN_VARIABLE"));
     }
 
     @Test
     void missingExpressionReturns400() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
+        post("{}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
 
     @Test
     void reservedNameInRequestVariablesReturns400() throws Exception {
-        // spec §7.1：请求级变量不得使用 pi
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expression\":\"sin(pi)\",\"variables\":{\"pi\":3}}"))
+        // spec §14 验收标准第 5 条的请求级变量版本
+        post("{\"expression\":\"sin(pi)\",\"variables\":{\"pi\":3}}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("pi")));
+                .andExpect(jsonPath("$.message").value(Matchers.containsString("pi")));
     }
 
     @Test
     void malformedJsonReturns400() throws Exception {
-        mockMvc.perform(post("/api/v1/calculator/calculate")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{not json"))
+        post("{not json")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
@@ -5504,41 +6312,44 @@ class CalculatorControllerTest {
     // ---------- 能力清单 ----------
 
     @Test
-    void functionsManifestListsOperatorsWithSymbols() throws Exception {
+    void functionsManifestListsEverything() throws Exception {
         mockMvc.perform(get("/api/v1/calculator/functions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.constants").isArray())
                 .andExpect(jsonPath("$.unaryFunctions.length()").value(23))
                 .andExpect(jsonPath("$.binaryFunctions.length()").value(5))
                 .andExpect(jsonPath("$.operators.length()").value(9))
+                .andExpect(jsonPath("$.constants.length()").value(2))
+                .andExpect(jsonPath("$.angleUnits.length()").value(2))
                 .andExpect(jsonPath("$.defaultAngleUnit").value("DEGREE"));
     }
 
     @Test
-    void functionsManifestDoesNotAdvertiseRedundantSpellings() throws Exception {
+    void manifestDoesNotAdvertiseRedundantSpellings() throws Exception {
         mockMvc.perform(get("/api/v1/calculator/functions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.binaryFunctions",
-                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("pow"))))
-                .andExpect(jsonPath("$.binaryFunctions",
-                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("mod"))))
-                .andExpect(jsonPath("$.unaryFunctions",
-                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("fact"))));
+                .andExpect(jsonPath("$.binaryFunctions", Matchers.not(Matchers.hasItem("pow"))))
+                .andExpect(jsonPath("$.binaryFunctions", Matchers.not(Matchers.hasItem("mod"))))
+                .andExpect(jsonPath("$.unaryFunctions", Matchers.not(Matchers.hasItem("fact"))));
     }
 
     @Test
-    void manifestPrecedenceMatchesOperatorTable() throws Exception {
+    void manifestExposesOperatorPrecedenceFromTheTable() throws Exception {
+        // 断言完整数组，避免依赖 JSONPath 过滤器语法
         mockMvc.perform(get("/api/v1/calculator/functions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.operators[?(@.symbol=='^')].precedence")
-                        .value(org.hamcrest.Matchers.contains(4)))
-                .andExpect(jsonPath("$.operators[?(@.symbol=='^')].associativity")
-                        .value(org.hamcrest.Matchers.contains("RIGHT")))
-                .andExpect(jsonPath("$.operators[?(@.symbol=='!')].fixity")
-                        .value(org.hamcrest.Matchers.contains("POSTFIX")));
+                .andExpect(jsonPath("$.operators[0].symbol").value("+"))
+                .andExpect(jsonPath("$.operators[0].precedence").value(1))
+                .andExpect(jsonPath("$.operators[5].symbol").value("^"))
+                .andExpect(jsonPath("$.operators[5].precedence").value(4))
+                .andExpect(jsonPath("$.operators[5].associativity").value("RIGHT"))
+                .andExpect(jsonPath("$.operators[8].symbol").value("!"))
+                .andExpect(jsonPath("$.operators[8].fixity").value("POSTFIX"))
+                .andExpect(jsonPath("$.operators[8].associativity").doesNotExist());
     }
 }
 ```
+
+**注**：`manifestExposesOperatorPrecedenceFromTheTable` 依赖 `OperatorTable.all()` 的顺序（`+ - * / % ^ !`，其中前两个是二元，第 7、8 个是一元）。该顺序已由 Task 5 的 `allExposesNineOperatorEntries` 与 `symbolsUseMathematicalNotationNotNames` 固定。若日后调整 `OperatorTable` 的元素顺序，这条测试会失败 —— 这是有意的，顺序变化需要人确认。
 
 - [ ] **Step 5: 运行确认通过**
 
@@ -5546,21 +6357,21 @@ class CalculatorControllerTest {
 
 预期：全部 PASS。
 
-**若 `malformedJsonReturns400` 失败并返回 500**：`HttpMessageNotReadableException` 未被 `standaloneSetup` 的 advise 捕获，检查 `GlobalExceptionHandler` 中该 handler 是否声明为 `@ExceptionHandler(HttpMessageNotReadableException.class)`。
+**若 `malformedJsonReturns400` 返回 500**：检查 `GlobalExceptionHandler` 中 `HttpMessageNotReadableException` 的 handler 是否存在，且 `standaloneSetup` 挂了 `setControllerAdvice`。
 
-- [ ] **Step 6: 写 HistoryController 测试**
+- [ ] **Step 6: 写其余三个 Controller 测试**
 
-创建 `src/test/java/com/wysjwxm/calculator/api/HistoryControllerTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/interfaces/HistoryControllerTest.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.error.GlobalExceptionHandler;
-import com.wysjwxm.calculator.config.CalculatorProperties;
-import com.wysjwxm.calculator.core.AngleUnit;
-import com.wysjwxm.calculator.core.number.Numbers;
-import com.wysjwxm.calculator.service.HistoryService;
-import com.wysjwxm.calculator.store.InMemoryCalculationHistoryStore;
+import com.wysjwxm.calculator.application.HistoryUseCase;
+import com.wysjwxm.calculator.domain.AngleUnit;
+import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
+import com.wysjwxm.calculator.domain.model.number.Numbers;
+import com.wysjwxm.calculator.infrastructure.InMemoryCalculationHistory;
+import com.wysjwxm.calculator.interfaces.error.GlobalExceptionHandler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -5573,29 +6384,32 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class HistoryControllerTest {
 
-    private InMemoryCalculationHistoryStore store;
+    private InMemoryCalculationHistory history;
     private MockMvc mockMvc;
+    private final Numbers numbers = new Numbers(34);
 
     @BeforeEach
     void setUp() {
-        store = new InMemoryCalculationHistoryStore(
-                new CalculatorProperties(AngleUnit.DEGREE, 1000, 34, 100));
+        history = new InMemoryCalculationHistory(100);
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new HistoryController(new HistoryService(store)))
+                .standaloneSetup(new HistoryController(new HistoryUseCase(history)))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
 
+    private void append(String expr, long result) {
+        history.append(new ExpressionText(expr), numbers.of(result), AngleUnit.DEGREE, 0.1);
+    }
+
     @Test
     void listsNewestFirst() throws Exception {
-        Numbers numbers = new Numbers(34);
-        store.append("first", numbers.of(1L), null, 0.1);
-        store.append("second", numbers.of(2L), null, 0.2);
+        append("1+1", 2);
+        append("2+2", 4);
 
         mockMvc.perform(get("/api/v1/history"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].expression").value("second"))
-                .andExpect(jsonPath("$.items[1].expression").value("first"))
+                .andExpect(jsonPath("$.items[0].expression").value("2+2"))
+                .andExpect(jsonPath("$.items[1].expression").value("1+1"))
                 .andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.page").value(0))
                 .andExpect(jsonPath("$.size").value(20))
@@ -5604,10 +6418,10 @@ class HistoryControllerTest {
 
     @Test
     void returnsSingleRecord() throws Exception {
-        Numbers numbers = new Numbers(34);
-        var record = store.append("1+1", numbers.of(2L), null, 0.1);
-        mockMvc.perform(get("/api/v1/history/" + record.id()))
+        append("1+1", 2);
+        mockMvc.perform(get("/api/v1/history/1"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.expression").value("1+1"))
                 .andExpect(jsonPath("$.result").value(2))
                 .andExpect(jsonPath("$.resultType").value("DECIMAL"));
@@ -5643,28 +6457,37 @@ class HistoryControllerTest {
 
     @Test
     void clearsHistory() throws Exception {
-        Numbers numbers = new Numbers(34);
-        store.append("a", numbers.of(1L), null, 0.1);
-        store.append("b", numbers.of(1L), null, 0.1);
-
+        append("1+1", 2);
+        append("2+2", 4);
         mockMvc.perform(delete("/api/v1/history"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.deleted").value(2));
     }
+
+    @Test
+    void paginationSlicesCorrectly() throws Exception {
+        for (int i = 1; i <= 5; i++) {
+            append("e" + i, i);
+        }
+        mockMvc.perform(get("/api/v1/history?page=0&size=2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].expression").value("e5"))
+                .andExpect(jsonPath("$.totalPages").value(3))
+                .andExpect(jsonPath("$.hasNext").value(true));
+    }
 }
 ```
 
-- [ ] **Step 7: 写 VariableController 测试**
-
-创建 `src/test/java/com/wysjwxm/calculator/api/VariableControllerTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/interfaces/VariableControllerTest.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
-import com.wysjwxm.calculator.api.error.GlobalExceptionHandler;
-import com.wysjwxm.calculator.core.function.FunctionRegistry;
-import com.wysjwxm.calculator.service.VariableService;
-import com.wysjwxm.calculator.store.InMemoryVariableStore;
+import com.wysjwxm.calculator.application.VariableUseCase;
+import com.wysjwxm.calculator.infrastructure.InMemoryVariableSet;
+import com.wysjwxm.calculator.interfaces.error.GlobalExceptionHandler;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -5685,7 +6508,7 @@ class VariableControllerTest {
     void setUp() {
         mockMvc = MockMvcBuilders
                 .standaloneSetup(new VariableController(
-                        new VariableService(new InMemoryVariableStore(), new FunctionRegistry())))
+                        new VariableUseCase(new InMemoryVariableSet())))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -5758,7 +6581,7 @@ class VariableControllerTest {
                 .andExpect(jsonPath("$.code").value("VARIABLE_NOT_FOUND"));
     }
 
-    // ---------- 保留名（spec §6.4） ----------
+    // ---------- 保留名（spec §14 验收标准第 5 条） ----------
 
     @Test
     void reservedConstantNameReturns400() throws Exception {
@@ -5767,7 +6590,7 @@ class VariableControllerTest {
                         .content("{\"value\":3}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("pi")));
+                .andExpect(jsonPath("$.message").value(Matchers.containsString("pi")));
     }
 
     @Test
@@ -5775,6 +6598,16 @@ class VariableControllerTest {
         mockMvc.perform(put("/api/v1/variables/sin")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"value\":3}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void readingOrDeletingAReservedNameIsAlsoRejected() throws Exception {
+        mockMvc.perform(get("/api/v1/variables/pi"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        mockMvc.perform(delete("/api/v1/variables/e"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
@@ -5799,12 +6632,10 @@ class VariableControllerTest {
 }
 ```
 
-- [ ] **Step 8: 写 MetaController 测试**
-
-创建 `src/test/java/com/wysjwxm/calculator/api/MetaControllerTest.java`：
+创建 `src/test/java/com/wysjwxm/calculator/interfaces/MetaControllerTest.java`：
 
 ```java
-package com.wysjwxm.calculator.api;
+package com.wysjwxm.calculator.interfaces;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -5830,53 +6661,32 @@ class MetaControllerTest {
 }
 ```
 
-- [ ] **Step 9: 运行全部测试**
+- [ ] **Step 7: 运行全部测试**
 
 运行：`mvn -q test`
 
 预期：全部 PASS。
 
-- [ ] **Step 10: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
-git add src/main/java/com/wysjwxm/calculator/api/ src/test/java/com/wysjwxm/calculator/api/
-git commit -m "feat: HTTP 接口层 — 求值、能力清单、历史、变量、健康检查共 10 个端点"
+git add src/main/java/com/wysjwxm/calculator/interfaces/ \
+        src/test/java/com/wysjwxm/calculator/interfaces/
+git commit -m "feat: 接口层 10 个 HTTP 端点与 DTO 防腐层"
 ```
 
 ---
 
-### Task 14: 端到端测试与打包验证
+### Task 15: 端到端测试与打包验证
 
 **Files:**
 - Test: `src/test/java/com/wysjwxm/calculator/CalculatorEndToEndTest.java`
-- Modify: `src/test/java/com/wysjwxm/calculator/ScientificCalculatorApplicationTests.java`
 
 **Interfaces:**
 - Consumes: 全部组件
 - Produces: 全链路验证
 
-- [ ] **Step 1: 扩展上下文测试**
-
-把 `src/test/java/com/wysjwxm/calculator/ScientificCalculatorApplicationTests.java` 替换为：
-
-```java
-package com.wysjwxm.calculator;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-
-@SpringBootTest
-class ScientificCalculatorApplicationTests {
-
-    @Test
-    void contextLoads() {
-    }
-}
-```
-
-（内容不变。保留它是为了确认所有 Bean 能装配 —— 尤其是 `CalculatorProperties` 的校验与三个 `@Repository`/`@Service` 的构造器注入。）
-
-- [ ] **Step 2: 写端到端测试**
+- [ ] **Step 1: 写端到端测试**
 
 创建 `src/test/java/com/wysjwxm/calculator/CalculatorEndToEndTest.java`：
 
@@ -5920,9 +6730,15 @@ class CalculatorEndToEndTest {
         return rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
     }
 
+    private ResponseEntity<String> putJson(String path, String body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return rest.exchange(url(path), HttpMethod.PUT, new HttpEntity<>(body, headers), String.class);
+    }
+
     @Test
     void fullWorkflow() {
-        // 1. 健康检查
+        // 1. 健康检查（spec §14 验收标准第 2 条）
         ResponseEntity<String> health = rest.getForEntity(url("/api/v1/health"), String.class);
         assertThat(health.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(health.getBody()).contains("\"status\":\"UP\"");
@@ -5931,80 +6747,88 @@ class CalculatorEndToEndTest {
         ResponseEntity<String> functions = rest.getForEntity(
                 url("/api/v1/calculator/functions"), String.class);
         assertThat(functions.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(functions.getBody()).contains("\"sin\"");
+        assertThat(functions.getBody()).contains("\"sin\"").contains("\"operators\"");
 
-        // 3. 表达式求值（spec §14 验收标准第 3 条）
+        // 3. 表达式求值（验收标准第 3 条）
         ResponseEntity<String> calc = postJson("/api/v1/calculator/calculate",
                 "{\"expression\":\"1 + 2 * sin(30) ^ 2\"}");
         assertThat(calc.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(calc.getBody()).contains("\"result\":1.5");
 
-        // 4. 精确性（spec §14 验收标准第 4 条）
+        // 4. 精确性（验收标准第 4 条）
         ResponseEntity<String> exact = postJson("/api/v1/calculator/calculate",
                 "{\"expression\":\"0.1+0.2\"}");
         assertThat(exact.getBody()).contains("\"result\":0.3");
 
-        // 5. 定义变量
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        ResponseEntity<String> put = rest.exchange(url("/api/v1/variables/x"), HttpMethod.PUT,
-                new HttpEntity<>("{\"value\":5}", headers), String.class);
-        assertThat(put.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // 5. 优先级三条规则
+        assertThat(postJson("/api/v1/calculator/calculate",
+                "{\"expression\":\"2^3^2\"}").getBody()).contains("\"result\":512");
+        assertThat(postJson("/api/v1/calculator/calculate",
+                "{\"expression\":\"-2^2\"}").getBody()).contains("\"result\":-4");
+        assertThat(postJson("/api/v1/calculator/calculate",
+                "{\"expression\":\"3!+1\"}").getBody()).contains("\"result\":7");
 
-        // 6. 用变量再算
+        // 6. 定义变量并使用已存变量
+        assertThat(putJson("/api/v1/variables/x", "{\"value\":5}").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
         ResponseEntity<String> withVariable = postJson("/api/v1/calculator/calculate",
                 "{\"expression\":\"x * 2 + 1\"}");
         assertThat(withVariable.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(withVariable.getBody()).contains("\"result\":11");
 
-        // 7. 查历史（上述 3 次成功计算应都已落库）
+        // 7. 查历史（第 3–6 步共 6 次成功计算）
         ResponseEntity<String> history = rest.getForEntity(
                 url("/api/v1/history?page=0&size=10"), String.class);
         assertThat(history.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(history.getBody()).contains("\"totalElements\":3");
+        assertThat(history.getBody()).contains("\"totalElements\":6");
 
-        // 8. 保留名被拒（spec §14 验收标准第 5 条）
-        ResponseEntity<String> reserved = rest.exchange(url("/api/v1/variables/pi"), HttpMethod.PUT,
-                new HttpEntity<>("{\"value\":3}", headers), String.class);
+        // 8. 保留名被拒（验收标准第 5 条）—— 存储入口
+        ResponseEntity<String> reserved = putJson("/api/v1/variables/pi", "{\"value\":3}");
         assertThat(reserved.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(reserved.getBody()).contains("INVALID_REQUEST");
 
-        // 9. 错误码
+        // 9. 保留名被拒 —— 请求级变量入口（同一规则，两个入口）
+        ResponseEntity<String> reservedInline = postJson("/api/v1/calculator/calculate",
+                "{\"expression\":\"sin(pi)\",\"variables\":{\"pi\":3}}");
+        assertThat(reservedInline.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(reservedInline.getBody()).contains("INVALID_REQUEST");
+
+        // 10. 错误码
         ResponseEntity<String> divideByZero = postJson("/api/v1/calculator/calculate",
                 "{\"expression\":\"1/0\"}");
         assertThat(divideByZero.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(divideByZero.getBody()).contains("DIVISION_BY_ZERO");
 
-        // 10. 未知路径
+        // 11. 未知路径
         ResponseEntity<String> notFound = rest.getForEntity(url("/api/v1/nope"), String.class);
         assertThat(notFound.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 
-        // 11. 清空历史
+        // 12. 清空历史
         ResponseEntity<String> cleared = rest.exchange(url("/api/v1/history"), HttpMethod.DELETE,
                 HttpEntity.EMPTY, String.class);
         assertThat(cleared.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(cleared.getBody()).contains("\"deleted\":3");
+        assertThat(cleared.getBody()).contains("\"deleted\":6");
     }
 }
 ```
 
-- [ ] **Step 3: 运行端到端测试**
+- [ ] **Step 2: 运行端到端测试**
 
 运行：`mvn -q test -Dtest=CalculatorEndToEndTest`
 
 预期：PASS。
 
-**若第 7 步 `totalElements` 不是 3**：说明某个计算请求未落历史或落了两次，检查 `CalculationService` 是否只在求值成功后 `append`。
+**若第 7 步 `totalElements` 不是 6**：说明某个计算请求未落历史或落了两次 —— 检查 `CalculationUseCase.calculate` 是否只在求值成功后 `append`。
 
-**若第 10 步返回 500 而非 404**：检查 `application.yaml` 中 `spring.mvc.throw-exception-if-no-handler-found` 与 `spring.web.resources.add-mappings` 是否都已设置（Task 12 Step 6）。
+**若第 11 步返回 500 而非 404**：检查 `application.yaml` 中 `spring.mvc.throw-exception-if-no-handler-found` 与 `spring.web.resources.add-mappings` 是否都已设置（Task 1 Step 4）。
 
-- [ ] **Step 4: 运行全部测试**
+- [ ] **Step 3: 运行全部测试**
 
 运行：`mvn -q clean test`
 
 预期：BUILD SUCCESS，全部测试通过。
 
-- [ ] **Step 5: 打包并验证 runnable jar**
+- [ ] **Step 4: 打包**
 
 运行：
 
@@ -6015,27 +6839,24 @@ ls -la target/scientific-calculator-0.0.1-SNAPSHOT.jar
 
 预期：jar 存在且体积明显大于几 KB（说明 `repackage` 已把依赖打进 fat jar）。
 
-- [ ] **Step 6: 手动冒烟测试**
+- [ ] **Step 5: 手动冒烟测试**
 
-在一个终端启动：
+请用户在自己终端启动（本会话不代跑长驻进程）：
 
 ```bash
 java -jar target/scientific-calculator-0.0.1-SNAPSHOT.jar
 ```
 
-在另一个终端验证（spec §14 验收标准第 2、3、4 条）：
+另开一个终端验证：
 
 ```bash
 curl -s localhost:8080/api/v1/health
 curl -s -X POST localhost:8080/api/v1/calculator/calculate \
-  -H 'Content-Type: application/json' \
-  -d '{"expression":"1 + 2 * sin(30) ^ 2"}'
+  -H 'Content-Type: application/json' -d '{"expression":"1 + 2 * sin(30) ^ 2"}'
 curl -s -X POST localhost:8080/api/v1/calculator/calculate \
-  -H 'Content-Type: application/json' \
-  -d '{"expression":"0.1+0.2"}'
+  -H 'Content-Type: application/json' -d '{"expression":"0.1+0.2"}'
 curl -s -X POST localhost:8080/api/v1/calculator/calculate \
-  -H 'Content-Type: application/json' \
-  -d '{"expression":"-2^2"}'
+  -H 'Content-Type: application/json' -d '{"expression":"-2^2"}'
 curl -s -X PUT localhost:8080/api/v1/variables/pi \
   -H 'Content-Type: application/json' -d '{"value":3}'
 curl -s localhost:8080/api/v1/calculator/functions
@@ -6046,16 +6867,16 @@ curl -s localhost:8080/api/v1/calculator/functions
 
 确认后 Ctrl-C 停止服务。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add src/test/
+git add src/test/java/com/wysjwxm/calculator/CalculatorEndToEndTest.java
 git commit -m "test: 端到端全链路测试与 runnable jar 验证"
 ```
 
 ---
 
-### Task 15: 交付文档
+### Task 16: 交付文档
 
 **Files:**
 - Create: `README.md`
@@ -6064,12 +6885,12 @@ git commit -m "test: 端到端全链路测试与 runnable jar 验证"
 - Create: `docs/03-AI协作记录.md`
 
 **Interfaces:**
-- Consumes: spec（`docs/superpowers/specs/2026-09-12-scientific-calculator-design.md`）与全部已实现代码
+- Consumes: spec（v3）与全部已实现代码
 - Produces: 交付文档
 
 - [ ] **Step 1: 写 README.md**
 
-内容须包含：项目简介、技术栈、构建命令（`mvn clean package`）、启动命令（`java -jar target/scientific-calculator-0.0.1-SNAPSHOT.jar`）、10 个端点的表格（方法 / 路径 / 说明）、每个端点一条可直接复制的 `curl` 示例、表达式语法速查（含优先级规则 `-2^2 = -4`、`2^3^2 = 512`）、保留名规则（变量名不得使用函数名与 `pi`/`e`）。
+内容须包含：项目简介、技术栈、构建命令（`mvn clean package`）、启动命令（`java -jar target/scientific-calculator-0.0.1-SNAPSHOT.jar`）、10 个端点的表格（方法 / 路径 / 说明）、每个端点一条可直接复制的 `curl` 示例、表达式语法速查（含优先级三条规则 `-2^2 = -4`、`2^3^2 = 512`、`3!+1 = 7`）、保留名规则（变量名不得使用函数名与 `pi`/`e`，**两个入口统一生效**）。
 
 - [ ] **Step 2: 写 docs/01-需求分析.md**
 
@@ -6077,7 +6898,9 @@ git commit -m "test: 端到端全链路测试与 runnable jar 验证"
 
 - [ ] **Step 3: 写 docs/02-架构设计.md**
 
-以 spec 为源头整理润色：分层架构与依赖方向铁律、数值模型的取舍、表达式语言规范、并发与存储策略（含 FIFO vs LRU 的论证）、错误码表，以及 **§12 设计决策记录（D1–D9）—— 含被否决方案及否决理由**。
+以 spec 为源头整理润色：DDD 四层与依赖方向铁律、**统一语言表与「限界上下文只有一个」的判断**、数值模型取舍、表达式语言规范、并发与存储策略（含 FIFO vs LRU 论证）、错误码表，以及 **§12 设计决策记录 D1–D13 —— 含被否决方案及否决理由**。
+
+特别要写明**刻意不引入**的东西及其理由：领域事件、规约模式、工厂类、CQRS、仓储与聚合分离。这一节的论证价值高于实现本身。
 
 - [ ] **Step 4: 写 docs/03-AI协作记录.md**
 
@@ -6114,44 +6937,58 @@ mvn -q clean package && ls -la target/*.jar
 
 | spec 章节 | 对应任务 |
 |---|---|
-| §2 约束（Java17/SB3.5/单一依赖） | Task 1 |
-| §3.1 做（10 个端点） | Task 13 |
+| §2 约束（Java17 / SB3.5 / 单一依赖） | Task 1 |
+| §3.1 做（10 个端点） | Task 14 |
 | §3.2 不做 | 全域（不出现在任何任务中） |
-| §4 分层与依赖方向 | Task 1–13 的包划分 |
+| §4.0 限界上下文与统一语言 | Task 8（变量值对象）、Task 16 |
+| §4.1 DDD 四层与包结构 | Task 1–14 的包划分 |
+| §4.2 组件职责 | 各任务 |
+| §4.3 三条实现约束 | Task 6（无状态）、Task 7（functionName）、Task 12（长度策略） |
 | §5 数值模型 | Task 3 |
 | §6.1 词法 | Task 4 |
-| §6.2–6.3 语法与优先级 | Task 5、6 |
-| §6.4 保留常量与禁用集合 | Task 7、9、11（VariableService 统一校验） |
+| §6.2–6.3 语法与优先级 | Task 5、Task 6 |
+| §6.4 保留常量与禁用集合 | Task 7、8、12、14（两入口统一） |
 | §6.5 函数集与定义域 | Task 7 |
-| §7.1 求值接口 | Task 13 |
-| §7.2 能力清单 | Task 13（由 OperatorTable 生成） |
-| §7.3 历史 | Task 10、11、12、13 |
-| §7.4 变量 | Task 9、11、13 |
-| §7.5 健康检查 | Task 13 |
-| §7.6 错误码（12 个） | Task 2、12 |
-| §8 并发与存储（FIFO） | Task 9、10 |
-| §9 配置项 | Task 1 |
+| §7.1 求值接口 | Task 14 |
+| §7.2 能力清单 | Task 14（由 OperatorTable 生成） |
+| §7.3 历史 | Task 10、12、13、14 |
+| §7.4 变量 | Task 11、12、14 |
+| §7.5 健康检查 | Task 14 |
+| §7.6 错误码（12 个） | Task 2、13 |
+| §8 并发与存储（FIFO） | Task 10、11 |
+| §9 配置项 | Task 1、12 |
 | §10 测试策略 | 每个任务的测试步骤 |
-| §11 交付物 | Task 15 |
-| §12 决策记录 D1–D9 | Task 15 Step 3 要求写入 02-架构设计.md |
-| §13 风险 | Task 15 |
-| §14 验收标准 | Task 14 |
+| §11 交付物 | Task 16 |
+| §12 决策记录 D1–D13 | Task 16 Step 3 要求写入 02-架构设计.md |
+| §13 风险 | Task 16 |
+| §14 验收标准 | Task 15 |
 
 无未覆盖项。
 
 **2. 占位符扫描**：无 TBD / TODO / 「类似 Task N」/ 无代码的代码步骤。
 
-**3. 类型一致性核对**：
+**3. 类型一致性核对**（逐个签名跨任务核对）：
 
-- `CalcException.of(code, message)` / `.at(code, message, position)` — Task 2 定义，Task 3 起一致使用
-- `Numbers` 为实例类，构造参数 `int divisionPrecision` — Task 3 定义，Task 8/9/11 一致
-- `Operator` 为 `(symbol, fixity, precedence, associativity)` — Task 5 定义，Task 6 解析器、Task 13 清单生成一致
-- `EvaluationContext.lookup(String)` 返回 `Optional<CalcNumber>` — Task 8 定义，Task 11 调用一致
-- `VariableStore.put/find/findAll/delete/size` — Task 9 定义，Task 11 一致
-- `CalculationHistoryStore.append/find/findPage/clear/size` — Task 10 定义，Task 11/13 一致
-- `VariableService.validateVariableName(String)` — Task 11 定义，Task 11 的 `CalculationService` 复用（**这是保留名校验统一生效的关键接缝**）
-- `CalculationOutcome(HistoryRecord record)` — Task 11 定义与使用一致
-- `HistoryRecord` 含 `elapsedMs()` — Task 10 定义，Task 11/13 一致
+| 符号 | 定义于 | 使用于 | 一致 |
+|---|---|---|---|
+| `CalcException.of(code, msg)` / `.at(code, msg, pos)` | Task 2 | Task 3 起 | ✓ |
+| `Numbers`（实例类，`int` 构造参数） | Task 3 | Task 7、9、10、12 | ✓ |
+| `ExpressionText(String)`，紧凑构造器 trim | Task 4 | Task 6、10、12、14 | ✓ |
+| `Lexer(String).tokenize()` | Task 4 | Task 6 | ✓ |
+| `Operator` 四元组 `(symbol, fixity, precedence, associativity)` | Task 5 | Task 6、14 | ✓ |
+| `ExpressionParser.parse(ExpressionText)`，**无状态** | Task 6 | Task 9、12 | ✓ |
+| `MathFunction.functionName()`（**不是 `name()`**） | Task 7 | Task 7、9 | ✓ |
+| `ReservedNames.standard()` / `.contains(String)` | Task 7 | Task 8 | ✓ |
+| `VariableName(String)` 构造即校验 | Task 8 | Task 11、12、14 | ✓ |
+| `EvaluationContext.lookup(String)`（**不是 `VariableName`**） | Task 9 | Task 9、12 | ✓ |
+| `ExpressionEvaluator.functionRegistry()` | Task 9 | Task 12 | ✓ |
+| `CalculationHistory.append/page/find/clear/size` | Task 10 | Task 12 | ✓ |
+| `VariableSet.define/find/all/remove/size` | Task 11 | Task 12 | ✓ |
+| `VariableUseCase.snapshot()` | Task 12 | Task 14（合并已存变量） | ✓ |
+| `CalculationPolicy(AngleUnit, int)` | Task 12 | Task 12、14 | ✓ |
+| `CalculationCommand(String, AngleUnit, Map)` | Task 12 | Task 12、14 | ✓ |
+| `ErrorStatusMapper.toStatus(CalcErrorCode)` | Task 13 | Task 13 | ✓ |
+| `FunctionsResponse.OperatorEntry.from(Operator)` | Task 14 | Task 14 | ✓ |
 
 **4. 已识别的实现期风险**
 
@@ -6159,6 +6996,12 @@ mvn -q clean package && ls -la target/*.jar
 |---|---|---|
 | `spring-boot-starter-parent:3.5.6` 可能不存在 | Task 1 Step 1 | 先查 Maven Central，取实际存在的 3.5.x 补丁版 |
 | `jakarta.validation` 是否随 web starter 传递引入 | Task 1 Step 8 | 已给出降级方案（手工校验 + IllegalArgumentException） |
-| `9^9^9` 走精确路径时 `BigDecimal.pow` 抛异常 | Task 8 Step 6 | 已在 `Numbers.power` 中 catch 并降级到 double |
-| `HttpMessageNotReadableException` 未被 advise 捕获 | Task 13 Step 5 | 已给出排查提示 |
-| 404 未走 `NoHandlerFoundException` | Task 14 Step 3 | 已给出 `application.yaml` 两项配置 |
+| 枚举无法覆写 `Enum.name()` | Task 7 | 接口方法定名 `functionName()`，已在 spec §4.3 记录 |
+| 解析器并发被踩踏 | Task 6 | 游标封在 `ParseRun`，并有并发测试钉住 |
+| `9^9^9` 走精确路径抛 `ArithmeticException` | Task 3 | `Numbers.power` 已 catch 并降级 |
+| 404 未走 `NoHandlerFoundException` | Task 15 Step 2 | 已给出 `application.yaml` 两项配置 |
+| `OperatorTable.all()` 顺序被测试依赖 | Task 14 Step 4 | 断言整数组，并注明顺序变更需人确认 |
+
+**5. 与上一版计划（非 DDD）的差异说明**
+
+上一版计划中 `interfaces` 之前的包名为 `core/api/service/store/config`。本版按 spec v3 改为 DDD 四层。核心算法代码（数值模型、词法、算子表、解析器、求值器、函数表）逻辑未变，仅包名与个别类型名调整；**新增的实质设计**是 `VariableName` 值对象、三个聚合根接口、以及应用层与领域层的分离。
