@@ -93,6 +93,14 @@ class CalculatorEndToEndTest {
         assertThat(calc.getBody()).contains("\"result\":0.3");
     }
 
+    @Test
+    void integralExactResultIsWrittenAsPlainDecimalOnTheRealStack() {
+        ResponseEntity<String> response = postJson("/api/v1/calculator/calculate", "{\"expression\": \"2*50\"}");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).contains("\"result\":100");
+        assertThat(response.getBody()).doesNotContain("1E+2");
+    }
+
     // ---------- 错误路径（真实状态码，不是内嵌 MockMvc 的状态码） ----------
 
     @Test

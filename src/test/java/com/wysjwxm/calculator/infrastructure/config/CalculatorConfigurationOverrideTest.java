@@ -42,6 +42,7 @@ class CalculatorConfigurationOverrideTest {
             CalculationPolicy policy = ctx.getBean(CalculationPolicy.class);
             assertThat(policy.maxExpressionLength()).isEqualTo(42);
             assertThat(policy.defaultAngleUnit()).isEqualTo(AngleUnit.RADIAN);
+            assertThat(policy.divisionPrecision()).isEqualTo(7);
         });
     }
 }

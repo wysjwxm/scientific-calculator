@@ -53,6 +53,19 @@ class CapabilityQueryTest {
     }
 
     @Test
+    void everyFunctionDescriptionIsNonBlankAndDistinct() {
+        List<String> all = new java.util.ArrayList<>();
+        for (UnaryFunction f : UnaryFunction.values()) {
+            all.add(f.description());
+        }
+        for (BinaryFunction f : BinaryFunction.values()) {
+            all.add(f.description());
+        }
+        assertThat(all).allSatisfy(d -> assertThat(d).isNotBlank());
+        assertThat(all).doesNotHaveDuplicates();
+    }
+
+    @Test
     void angleSensitivityMatchesTheDomainEnums() {
         CapabilityManifest m = describe();
         assertThat(m.unaryFunctions()).allSatisfy(f ->
@@ -76,9 +89,12 @@ class CapabilityQueryTest {
     }
 
     @Test
-    void limitsComeFromTheRealCodeConstants() {
-        assertThat(describe().limits()).isEqualTo(new Limits(
-                1000, 34, Numbers.MAX_EXACT_DIGITS, DecimalNumber.MAX_SCALE_MAGNITUDE));
+    void limitsMatchTheConfiguredPolicyAndTheDomainBounds() {
+        CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000, 34);
+        CapabilityQuery query = new CapabilityQuery(policy);
+        assertThat(query.describe(List.of()).limits()).isEqualTo(new Limits(
+                policy.maxExpressionLength(), policy.divisionPrecision(),
+                Numbers.MAX_EXACT_DIGITS, DecimalNumber.MAX_SCALE_MAGNITUDE));
     }
 
     @Test
