@@ -44,6 +44,8 @@ class CapabilityControllerTest {
                 .andExpect(jsonPath("$.unaryFunctions[0].domain").value("任意实数"))
                 .andExpect(jsonPath("$.unaryFunctions[0].description")
                         .value("正弦。入参按 angleUnit 解释为角度或弧度，返回比值"))
+                .andExpect(jsonPath("$.constants[0].name").value("pi"))
+                .andExpect(jsonPath("$.constants[0].description").value("圆周率"))
                 .andExpect(jsonPath("$.binaryFunctions[4].description")
                         .value("对数 log(真数, 底数)"))
                 .andExpect(jsonPath("$.binaryFunctions[4].name").value("log"))

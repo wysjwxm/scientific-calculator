@@ -53,13 +53,16 @@ class CapabilityQueryTest {
     }
 
     @Test
-    void everyFunctionDescriptionIsNonBlankAndDistinct() {
+    void everyDescriptionInTheManifestIsNonBlankAndDistinct() {
         List<String> all = new java.util.ArrayList<>();
         for (UnaryFunction f : UnaryFunction.values()) {
             all.add(f.description());
         }
         for (BinaryFunction f : BinaryFunction.values()) {
             all.add(f.description());
+        }
+        for (MathematicalConstant c : MathematicalConstant.values()) {
+            all.add(c.description());
         }
         assertThat(all).allSatisfy(d -> assertThat(d).isNotBlank());
         assertThat(all).doesNotHaveDuplicates();
