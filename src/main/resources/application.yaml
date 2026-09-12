@@ -1,3 +1,20 @@
 spring:
   application:
     name: scientific-calculator
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+
+server:
+  port: 8080
+  error:
+    whitelabel:
+      enabled: false
+
+calculator:
+  default-angle-unit: DEGREE
+  history-capacity: 1000
+  max-expression-length: 1000
+  division-precision: 34
