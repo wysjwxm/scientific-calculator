@@ -63,12 +63,50 @@ class NumbersTest {
 
     @Test
     void hugePowerFallsBackToFloatingWithoutThrowingArithmeticException() {
-        // 9^9 = 387420489 可装进 int，但 BigDecimal.pow 会因结果过大而抛 ArithmeticException
+        // 9^9 = 387420489 远超结果位数预算，请求被提前引到浮点路径，由 requireFinite 拒收
         CalcNumber nine = numbers.of(9L);
         CalcNumber exponent = numbers.power(nine, nine);
         assertThatThrownBy(() -> numbers.power(nine, exponent))
                 .isInstanceOf(CalcException.class)
                 .extracting(e -> ((CalcException) e).code())
                 .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void computedFloatingResultsAreNormalized() {
+        // sin(30°) 的原始 double 是 0.49999999999999994；经过规整应为 0.5
+        double raw = Math.sin(Math.toRadians(30));
+        assertThat(raw).isNotEqualTo(0.5);
+        assertThat(numbers.multiply(numbers.floating(raw), numbers.of(1L)).toDouble())
+                .isEqualTo(0.5);
+    }
+
+    @Test
+    void nestedHugePowerIsRejectedInsteadOfBlowingUp() {
+        // (9^10000)^10000 的精确结果约 9542 万位：必须快速拒绝，而不是硬算到 OOM
+        CalcNumber inner = numbers.power(numbers.of(9L), numbers.of(10_000L));
+        assertThatThrownBy(() -> numbers.power(inner, numbers.of(10_000L)))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void floatingFactoryRejectsNonFinite() {
+        assertThatThrownBy(() -> numbers.floating(Double.NaN))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+        assertThatThrownBy(() -> numbers.floating(Double.POSITIVE_INFINITY))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void normalizationDoesNotFalselyRejectTopOfDoubleRange() {
+        // 规整的进位会把 Double.MAX_VALUE 推成 Infinity；此时必须保留原值
+        assertThat(numbers.multiply(numbers.floating(Double.MAX_VALUE), numbers.of(1L)).toDouble())
+                .isEqualTo(Double.MAX_VALUE);
     }
 }

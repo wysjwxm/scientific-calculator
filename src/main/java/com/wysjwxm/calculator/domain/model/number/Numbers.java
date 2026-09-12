@@ -18,12 +18,14 @@ public final class Numbers {
     /** 阶乘上界：171! 超出 double 范围。 */
     private static final int FACTORIAL_LIMIT = 170;
 
-    /** 精确幂的指数上界：更大的指数会让 BigDecimal.pow 产生数亿位的中间结果，
-     *  而 double 无论如何都会溢出，直接走浮点路径由 requireFinite 兜底。 */
-    private static final int MAX_EXACT_EXPONENT = 10_000;
+    /** 精确幂的结果位数预算。按 base 的 precision × 指数估算结果位数：超出预算时
+     *  BigDecimal.pow 会产生天文数字般的中间结果（9^(10000×10000) 约 9542 万位），
+     *  而 double 又装不下，因此直接走浮点路径由 requireFinite 兜底。 */
+    private static final int MAX_EXACT_DIGITS = 10_000;
 
-    /** double 有约 15~17 位有效数字：按 15 位有效数字规整，抹掉运算末位的噪声
-     *  （如 sin(30°) 得到的 0.49999999999999994 → 0.5），同时不损失有效精度。 */
+    /** double 约 15~17 位有效数字：按 15 位有效数字规整，抹掉运算末位的噪声
+     *  （如 sin(30°) 的 0.49999999999999994 → 0.5）。代价是绝大多数计算结果的
+     *  最后 1~2 位会被改写（相对误差上限约 5e-15），换来的是结果不再带末位噪声。 */
     private static final MathContext NORMALIZE_CONTEXT = new MathContext(15);
 
     private final MathContext divisionContext;
@@ -44,6 +46,7 @@ public final class Numbers {
     }
 
     public CalcNumber floating(double v) {
+        requireFinite(v, "浮点值");
         return new FloatingNumber(v);
     }
 
@@ -100,7 +103,10 @@ public final class Numbers {
             BigDecimal exp = exponent.toDecimal();
             // 仅非负整数指数走精确路径；负指数与分数指数降级到 double
             if (exp.stripTrailingZeros().scale() <= 0 && exp.signum() >= 0) {
-                if (exp.compareTo(BigDecimal.valueOf(MAX_EXACT_EXPONENT)) <= 0) {
+                // 用 BigDecimal 比较，避免指数极大时 int 溢出（如 10^30）
+                BigDecimal estimatedDigits = BigDecimal.valueOf(base.toDecimal().precision())
+                        .multiply(exp);
+                if (estimatedDigits.compareTo(BigDecimal.valueOf(MAX_EXACT_DIGITS)) <= 0) {
                     return new DecimalNumber(base.toDecimal().pow(exp.intValueExact()));
                 }
                 return floatingFinite(Math.pow(base.toDouble(), exp.doubleValue()), "幂运算");
@@ -145,9 +151,8 @@ public final class Numbers {
         // 先判非有限：既拦住 Inf/NaN，也让下面的 BigDecimal.valueOf 不会收到 NaN
         requireFinite(v, what);
         double normalized = BigDecimal.valueOf(v).round(NORMALIZE_CONTEXT).doubleValue();
-        // 再判一次：15 位有效数字的进位可能把接近 Double.MAX_VALUE 的值推到 Infinity
-        requireFinite(normalized, what);
-        return new FloatingNumber(normalized);
+        // 15 位规整的进位可能把接近 Double.MAX_VALUE 的值推到 Infinity，此时保留原值
+        return new FloatingNumber(Double.isFinite(normalized) ? normalized : v);
     }
 
     private static boolean bothExact(CalcNumber a, CalcNumber b) {
