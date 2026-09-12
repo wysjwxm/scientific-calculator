@@ -49,9 +49,12 @@ class CalculatorConfigurationTest {
 
     @Test
     void registersExactlyTheSixEvaluationPathBeans() {
-        // MVP 只装配求值路径的 6 个 Bean。这条断言钉住的是「装配清单」本身：少一个 Bean，
-        // 本期没有第二个消费者会报错（上下文照样启动），缺陷要潜伏到 Task 14 的控制器
-        // 里才以「找不到 bean」的形式爆出来。
+        // MVP 只装配求值路径的 6 个 Bean。这条断言钉住的是「装配清单」本身。
+        // 其中 5 个都有下游消费者（ExpressionEvaluator 依赖 numbers 与 functionRegistry；
+        // CalculationUseCase 依赖 expressionParser、expressionEvaluator 与 calculationPolicy），
+        // 漏装它们会让上下文**启动失败**。只有 CalculationUseCase 在本期没有任何消费者 ——
+        // 要到 Task 14 的控制器才有人引用它 —— 漏装它时上下文照常起得来，
+        // 这里就成了唯一的探测器。
         for (Class<?> type : List.of(Numbers.class, FunctionRegistry.class, ExpressionParser.class,
                 ExpressionEvaluator.class, CalculationPolicy.class, CalculationUseCase.class)) {
             assertThat(context.getBeanNamesForType(type))
@@ -62,7 +65,11 @@ class CalculatorConfigurationTest {
 
     @Test
     void policyTakesItsValuesFromConfigurationProperties() {
-        // 装配的翻译路径：properties → policy。两者取值必须一致，否则 yaml 改了不生效。
+        // properties → policy 的装配翻译路径：断言两者取值一致，钉住「分量对应关系」没接错
+        // （如把 defaultAngleUnit 与 maxExpressionLength 接反）。
+        // 注意这条对照断言**抓不到「装配处写死常量」**：yaml 的值恰好等于 @DefaultValue，
+        // 写死 1000 / DEGREE 与读 properties 在这里结果完全相同。
+        // 钉住翻译路径的是 CalculatorConfigurationOverrideTest（换一组属性值再断言）。
         CalculatorProperties properties = context.getBean(CalculatorProperties.class);
         CalculationPolicy policy = context.getBean(CalculationPolicy.class);
         assertThat(policy.defaultAngleUnit()).isEqualTo(properties.defaultAngleUnit());
