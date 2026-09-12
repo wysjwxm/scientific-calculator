@@ -165,7 +165,7 @@ Content-Type: application/json
 
 
 # 预期 [领域层钉] 200，"result":4.0（**不是** 4）—— 浮点路径走 writeNumber(double)，写出的是 double 的形态。
-#   值由领域层钉住：ExpressionEvaluatorTest.dispatchToFunctions 断言 num("sqrt(16)") == 4.0；
+#   值由领域层钉住：ExpressionEvaluatorTest.dispatchesToFunctions 断言 num("sqrt(16)") == 4.0；
 #   线上形态由 CalcNumberSerializerTest.floatingPathIsWrittenAsDouble 直连序列化器钉住（{"value":4.0}）。
 #   HTTP 层没有为这一例写过断言 —— 所以是 [领域层钉]，不是 [钉住]。
 ### 4.4 浮点路径的整数形态：sqrt(16)  →  4.0

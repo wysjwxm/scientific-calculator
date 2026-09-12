@@ -115,7 +115,7 @@ class CalculatorControllerTest {
         // angleUnit 为 null 时字段照常出现、值为 null —— 这是本期的设计选择：
         // CalculateResponse 上没有 @JsonInclude(NON_NULL)，键一定在。
         // 故断言 null 值，而非 doesNotExist()（后者要求键不存在）。
-        // 注意：spec 未规定求值响应的 null 形态；spec :444 的「其余记录该字段为 null」
+        // 注意：spec 未规定求值响应的 null 形态；spec :449 的「其余记录该字段为 null」
         // 讲的是历史记录，不是这里。
         calculate("{\"expression\":\"1+2\"}")
                 .andExpect(status().isOk())

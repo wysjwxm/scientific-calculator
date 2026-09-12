@@ -14,7 +14,7 @@ import java.util.Map;
  * <p>注意 {@code variables} 的键仍是原始字符串 —— 本期的变量只作为**请求级
  * 临时量**进入求值上下文，没有变量存储，因此不存在第二个入口。键受**禁用集合**
  * （函数名 ∪ 保留常量名，spec §6.4）约束：落在集合内（如 {@code {"pi": 3}}）返回
- * 400 {@code INVALID_REQUEST}，与 spec :367 一致。
+ * 400 {@code INVALID_REQUEST}，与 spec :372 一致。
  *
  * <p>按 D13，Phase 2 补上 {@code VariableName} 值对象后，这个命名校验应迁移到该值
  * 对象的构造器里。当前放在这里是权宜：MVP 只有请求级这一个变量入口，还不需要

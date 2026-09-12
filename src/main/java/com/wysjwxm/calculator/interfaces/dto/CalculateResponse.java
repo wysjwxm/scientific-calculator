@@ -13,7 +13,7 @@ import com.wysjwxm.calculator.domain.model.number.CalcNumber;
  * <p>angleUnit 为 null 时**照常序列化成 JSON null**，不省略字段。这是本期的设计选择：
  * **spec 没有规定求值响应的 null 形态**（§7.1 的 200 样例只给出取值非 null 的一种）。
  * 选择保留字段而非省略，是因为「字段在场且为 null」比「字段缺席」更能表达
- * 「本次求值不涉及角度」。spec :444 那句「其余记录该字段为 `null`」是**历史记录**
+ * 「本次求值不涉及角度」。spec :449 那句「其余记录该字段为 `null`」是**历史记录**
  * （§7.3）一节对历史条目字段的规定，与这里无关，不要引作依据。
  */
 public record CalculateResponse(

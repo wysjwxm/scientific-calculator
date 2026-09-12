@@ -11,9 +11,10 @@ import java.util.Optional;
  *
  * <p>按**原始字符串**查找而非 {@code VariableName}：表达式里的标识符是任意
  * 词法单元，求值器不应因为 "sin(sin)" 里的内层 sin 而构造一个名字值对象
- * （那会抛出 INVALID_REQUEST，而正确的语义是 UNKNOWN_VARIABLE）。集合里的
- * 键在写入时已经过 VariableName 校验，因此这里按字符串查到的东西，
- * 必然是合法定义过的。
+ * （那会抛出 INVALID_REQUEST，而正确的语义是 UNKNOWN_VARIABLE）。{@code VariableName}
+ * 与它的校验属 Phase 2（决策 D13），当前并不存在：写入端（{@code CalculationCommand}）
+ * 只拒收保留名与 null，不做任何格式校验。这里查不到非标识符的键，原因不在写入端，
+ * 而在**词法器产不出那种 token** —— 求值器只按表达式里的标识符查找。
  */
 @FunctionalInterface
 public interface EvaluationContext {
