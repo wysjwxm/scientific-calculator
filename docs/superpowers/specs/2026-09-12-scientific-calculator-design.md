@@ -1,7 +1,7 @@
 # 科学计算器后端服务 — 设计文档（Spec）
 
 - 日期：2026-09-12
-- 版本：v2（v1 经评审后大幅收敛，变更见 §12）
+- 版本：v3（v2 的表达式语言与数值模型不变；v3 将架构风格改为 DDD 四层，变更见 §12 D10–D13）
 - 状态：已评审，待实现
 - 关联交付文档：`docs/01-需求分析.md`、`docs/02-架构设计.md`、`docs/03-AI协作记录.md`
   （本 spec 是 02-架构设计.md 的源头，实现阶段整理润色后产出）
@@ -60,51 +60,112 @@
 - 限流、熔断、链路追踪
 - 前端页面
 
-## 4. 分层架构
+## 4. 领域驱动设计（DDD）落地
 
-核心原则：**`core` 包是纯计算内核，零 Spring 依赖**——不 import 任何 `org.springframework.*`。它因此可以被最纯粹地单测，也具备独立复用与替换的可能。Spring 只存在于 `api` / `service` / `config`。
+### 4.0 限界上下文与统一语言
+
+**限界上下文只有一个：表达式计算上下文。** 变量、求值、历史三者共用同一套词汇——"变量名"在这三处含义完全相同，不存在需要翻译的同形异义词，也没有需要隔开的团队边界。硬拆成多个上下文只会引入没有翻译内容的防腐层。**判断"不拆"与判断"拆"同样是 DDD 的设计动作**，此处如实记录结论。
+
+统一语言（Ubiquitous Language）——代码类名与文档用语一一对应，不使用同义词、不做别名：
+
+| 领域概念 | 类型 | 代码元素 |
+|---|---|---|
+| 表达式原文 | 值对象 | `ExpressionText`（构造即校验：非空白、长度上限） |
+| 表达式 | 值对象 | `Expression`（sealed AST 及节点） |
+| 数值 | 值对象 | `CalcNumber` / `DecimalNumber` / `FloatingNumber` |
+| 算符 | 值对象 | `Operator`、`OperatorTable` |
+| 函数 | 值对象 | `MathFunction`、`UnaryFunction`、`BinaryFunction` |
+| 保留常量 | 值对象 | `MathematicalConstant` |
+| 保留名集合 | 值对象 | `ReservedNames`（函数名 ∪ 常量名） |
+| 角度制 | 值对象 | `AngleUnit` |
+| 变量名 | **值对象** | `VariableName`（构造即校验，无旁路） |
+| 变量 | 实体 | `Variable`（身份 = `VariableName`，含 created/updated 生命周期） |
+| 变量表 | **聚合根** | `VariableSet` |
+| 计算 | 实体 | `Calculation`（身份 = id） |
+| 计算历史 | **聚合根** | `CalculationHistory` |
+
+**为什么 `VariableName` 必须是值对象。** 保留名规则若只放在应用服务的方法里，它就只是"记得调用才生效"的纪律——`CalculationService` 漏调一次，`{"pi": 3}` 就能绕过（v2 的 `VariableService.validateVariableName()` 正是这个形态，且需要调用方从另一个服务上调它）。做成值对象后，名字在**构造**时即完成校验，进入求值器的变量集合类型是 `Map<VariableName, CalcNumber>`——**不合格的名字根本造不出对象**。不变量由类型系统保证，而非由调用者的自觉保证。
+
+**校验可以完全放进构造器**，因此不需要额外的领域服务：函数集（`UnaryFunction` / `BinaryFunction`）与常量集（`MathematicalConstant`）都是编译期固定的枚举，保留名集合 `ReservedNames.standard()` 因此是静态可求的，不依赖任何运行时配置或外部状态。`VariableName` 的规范构造器于是能独立完成格式、长度、保留名三项校验——**构造即校验，无旁路**。见 §12 D13。
+
+### 4.1 分层
+
+DDD 四层，依赖方向严格单向：
+
+```
+interfaces       用户接口层   Controller、DTO、错误状态映射
+                              ← 同时是防腐层（ACL）：JSON ↔ 领域对象，两侧不互相渗透
+application      应用层       用例编排、配置注入 —— 不含业务规则
+domain           领域层       全部业务规则；零框架依赖
+infrastructure   基础设施层   聚合根的内存实现、Spring 装配
+
+依赖方向：interfaces → application → domain ← infrastructure
+```
+
+`domain` 不依赖任何其他层，也不 import 任何 `org.springframework.*`，因此可被最纯粹地单测。`infrastructure` 反向依赖 `domain`（实现其声明的聚合根接口），装配在启动时完成。
 
 ```
 com.wysjwxm.calculator
 ├── ScientificCalculatorApplication
-├── core/                          ← 纯内核，零 Spring 依赖
-│   ├── number/                    CalcNumber, DecimalNumber, FloatingNumber, Numbers
-│   ├── lexer/                     Token, TokenType, Lexer
-│   ├── parser/                    ExpressionParser
-│   │   └── ast/                   sealed Expression + 各类节点
-│   ├── function/                  MathFunction, FunctionRegistry
-│   ├── operator/                  Operator, OperatorTable（解析器内部使用）
-│   └── eval/                      Evaluator, EvaluationContext
-├── api/
-│   ├── CalculatorController       /calculate, /functions
-│   ├── HistoryController          /history
-│   ├── VariableController         /variables
-│   ├── MetaController             /health
-│   ├── dto/                       record 形式的请求/响应体
-│   └── error/                     GlobalExceptionHandler, ErrorResponse
-├── service/                       CalculationService, HistoryService, VariableService
-├── store/                         接口 + InMemory 实现
-│   ├── CalculationHistoryStore    / InMemoryCalculationHistoryStore
-│   └── VariableStore              / InMemoryVariableStore
-└── config/                        CalculatorProperties
+├── domain/                              ← 零框架依赖
+│   ├── model/
+│   │   ├── expression/                   Expression(sealed) 及节点,
+│   │   │                                 ExpressionText, Operator, OperatorTable,
+│   │   │                                 Fixity, Associativity, Token, TokenType
+│   │   ├── expression/parse/             Lexer, ExpressionParser          ← 领域服务
+│   │   ├── expression/eval/              ExpressionEvaluator,
+│   │   │                                 EvaluationContext, AstInspection ← 领域服务
+│   │   ├── number/                       CalcNumber, DecimalNumber,
+│   │   │                                 FloatingNumber, Numbers          ← 领域服务
+│   │   ├── function/                     MathFunction, UnaryFunction,
+│   │   │                                 BinaryFunction, FunctionRegistry,
+│   │   │                                 ReservedNames
+│   │   ├── variable/                     VariableName(VO, 构造即校验),
+│   │   │                                 Variable(实体), VariableSet(聚合根, 接口)
+│   │   └── calculation/                  Calculation(实体), PageResult,
+│   │                                     CalculationHistory(聚合根, 接口)
+│   ├── AngleUnit, MathematicalConstant
+│   └── error/                            CalcErrorCode, CalcException
+├── application/                          CalculationUseCase, VariableUseCase,
+│                                         HistoryUseCase, CalculationPolicy
+├── infrastructure/                       InMemoryVariableSet,
+│   │                                     InMemoryCalculationHistory
+│   └──config/                            CalculatorProperties, CalculatorConfiguration
+└── interfaces/                           CalculatorController, HistoryController,
+                                          VariableController, MetaController,
+                                          dto/, error/
 ```
 
-**依赖方向严格单向**：`api → service → store`、`service → core`、`core → 无`。`core` 不认识 `store`，求值时所需的变量通过 `EvaluationContext` 接口注入，避免内核反向依赖存储层。
+**聚合根与仓储在本设计中合并，这是刻意的。** 教科书里 `VariableSet`（聚合根）与 `VariableRepository`（仓储）是两个类型，仓储负责加载/保存聚合。但那套分离的前提是**存在持久化机制**——加载要查库、保存要写库，是真实的、可能失败的操作，值得单独抽象并注入事务语义。本系统纯内存，聚合根本身就是存储，再加一层只是把调用原样转发一遍。因此：**领域层声明聚合根接口（`VariableSet`、`CalculationHistory`），基础设施层提供内存实现**，不制造空的仓储层。见 §12 D11。
 
-`store` 采用「接口 + InMemory 实现」的原因：题目禁掉了 MySQL/Redis，但把接口留出来，"未来可替换持久化实现"才是真实成立的设计陈述，而非空话。
+**`infrastructure` 不向 `application` 反向暴露配置类。** `CalculatorProperties` 是 Spring 绑定类，属基础设施关切，放在 `infrastructure/config`；由同包的 `CalculatorConfiguration` 把它翻译成下游能用的 bean：
 
-### 4.1 组件职责
+- `Numbers`（注入 `divisionPrecision`）→ 领域服务
+- `FunctionRegistry`、`ReservedNames` → 领域对象
+- `CalculationPolicy`（`defaultAngleUnit` + `maxExpressionLength`）→ **应用层的纯 Java record，无框架残留**
+- `InMemoryCalculationHistory`（注入 `historyCapacity`）→ 基础设施自身消费
 
-| 组件 | 职责 | 依赖 |
-|---|---|---|
-| `Lexer` | 字符串 → Token 流，携带位置信息 | 无 |
-| `ExpressionParser` | Token 流 → AST（**优先级爬升**式递归下降，由 `OperatorTable` 驱动） | Lexer 产物、`OperatorTable` |
-| `OperatorTable` | 算子优先级与结合性的**唯一事实来源**。解析器与 `/functions` 清单均由此生成，无对应 HTTP 接口 | 无 |
-| `Evaluator` | AST → `CalcNumber`，配合 `EvaluationContext` 解析变量 | AST、注册表 |
-| `FunctionRegistry` | 函数名 → 函数实现的查表 | `MathFunction` 实现 |
-| `CalculationService` | 编排：解析 → 求值 → 落历史；角度单位处理；保留名校验 | core、store |
-| `HistoryService` | 历史记录的分页查询与清理 | `CalculationHistoryStore` |
-| `VariableService` | 变量的增删查改与保留名校验 | `VariableStore` |
+这样 `application` 只依赖 `CalculationPolicy` 这个无注解的 record，不 import `CalculatorProperties`，依赖方向不被配置类破口。
+
+### 4.2 组件职责
+
+| 组件 | 层 | 职责 | 依赖 |
+|---|---|---|---|
+| `Lexer` | domain | 字符串 → Token 流，携带字符位置 | 无 |
+| `ExpressionParser` | domain | Token 流 → `Expression`（**优先级爬升**式递归下降，由 `OperatorTable` 驱动） | Lexer 产物、`OperatorTable` |
+| `OperatorTable` | domain | 算子优先级与结合性的**唯一事实来源**。解析器与 `/functions` 清单均由此生成 | 无 |
+| `ExpressionEvaluator` | domain | `Expression` → `CalcNumber`，配合 `EvaluationContext` 解析变量 | AST、注册表 |
+| `ExpressionText` | domain | 表达式原文的值对象，构造即校验非空白与长度上限 | 长度上限以 `int` 参数传入（**不依赖 `CalculationPolicy`——那是应用层类型，依赖方向不允许**） |
+| `FunctionRegistry` | domain | 函数名 → 函数实现的查表 | `MathFunction` 实现 |
+| `ReservedNames` | domain | 保留名集合（函数名 ∪ 常量名）的值对象，`standard()` 静态可求 | `UnaryFunction`、`BinaryFunction`、`MathematicalConstant` |
+| `VariableName` | domain | **值对象，构造即校验**格式 / 长度 / 非保留名 —— 三项全在构造器内，无旁路 | `ReservedNames` |
+| `VariableSet` | domain | **聚合根接口**：变量的增删查改（身份 = `VariableName`） | `VariableName`、`Variable` |
+| `CalculationHistory` | domain | **聚合根接口**：追加（含容量淘汰）、按 id 查、分页、清空 | `Calculation`、`PageResult` |
+| `CalculationUseCase` | application | 编排：`ExpressionText` → 解析 → 求值 → 落历史；角度单位缺省；请求级变量名翻译为 `VariableName` | domain |
+| `VariableUseCase` | application | 编排变量读写；原始名翻译为 `VariableName` | domain |
+| `HistoryUseCase` | application | 历史分页参数校验与查询 | domain |
+| `InMemoryVariableSet` | infrastructure | `ConcurrentHashMap` 实现 | `VariableSet` |
+| `InMemoryCalculationHistory` | infrastructure | `ArrayDeque` + 读写锁实现 | `CalculationHistory` |
 
 ## 5. 数值模型
 
@@ -124,7 +185,7 @@ record FloatingNumber(double value)    implements CalcNumber { }
 
 ### 5.2 类型提升与运算规则
 
-所有提升逻辑集中在 `Numbers` 工具类，不在求值器里散落：
+所有提升逻辑集中在 `Numbers` 领域服务，不在求值器里散落：
 
 | 场景 | 规则 |
 |---|---|
@@ -196,6 +257,8 @@ args       → expression (',' expression)*
 之所以把常量也列入保留名：若允许 `pi = 3`，则 `sin(pi)` 的含义会随调用方的写入操作静默改变，表达式的可重现性被破坏。常量是语言的一部分，不应是可被覆盖的缺省值。
 
 因两个集合互斥，**IDENT 的解析无歧义**：先查用户变量，未命中则查保留常量，仍未命中抛 `UNKNOWN_VARIABLE`。
+
+**这条规则由类型系统落实，而非由调用纪律落实**（见 §4.0）：禁用集合是值对象 `ReservedNames`，用户变量名必须构造为 `VariableName` 才能进入任何 API，而 `VariableName` 的构造器**本身就拒绝保留名**。存储写入与请求级变量两条入口，最终都只能拿到 `Map<VariableName, CalcNumber>`。因此不存在"某个入口忘了校验"的可能——校验不在入口处，在类型里。
 
 ### 6.5 函数集
 
@@ -381,16 +444,18 @@ args       → expression (',' expression)*
 
 > `UNKNOWN_OPERATOR`（v1 有）已随结构化算子接口一并删除。
 
-实现方式：业务异常统一继承 `CalculatorException(code, httpStatus)`，由 `GlobalExceptionHandler`（`@RestControllerAdvice`）转换为上述响应体。**不依赖 Spring 默认错误页**，`server.error.whitelabel.enabled=false`。
+实现方式：业务异常为领域层的 `CalcException(code, message, position)`——**刻意不携带 HTTP 状态码**，因为传输协议是接口层的关切，领域异常不该知道 HTTP 的存在。`interfaces/error/ErrorStatusMapper` 集中承担 `CalcErrorCode → HttpStatus` 的映射，由 `GlobalExceptionHandler`（`@RestControllerAdvice`）转换为上述响应体，**不依赖 Spring 默认错误页**（`server.error.whitelabel.enabled=false`）。
+
+映射表拆成两处会漂移，因此由 `ErrorStatusMapperTest` 断言**每个 `CalcErrorCode` 都有映射**——新增错误码却忘了给状态时，测试直接失败，而不是等到运行时才以 500 的形式暴露。
 
 ## 8. 并发与存储
 
-两种存储按各自的访问模式选择并发策略：
+两个聚合根的内存实现按各自的访问模式选择并发策略：
 
-| 存储 | 数据结构 | 并发策略 | 理由 |
+| 聚合根（内存实现） | 数据结构 | 并发策略 | 理由 |
 |---|---|---|---|
-| 变量 | `ConcurrentHashMap<String, VariableRecord>` | 无锁读，`put` 写入 | 读多写少；单键操作天然原子，无需额外锁 |
-| 历史 | `ArrayDeque<HistoryRecord>` | `ReentrantReadWriteLock` | 有**容量上限**，插入时必须原子地完成"追加 + 淘汰最旧"，`ConcurrentLinkedDeque` 无法保证精确边界；读操作占比高，读锁可并发 |
+| `VariableSet`（`InMemoryVariableSet`） | `ConcurrentHashMap<VariableName, Variable>` | 无锁读，`compute` 写入 | 读多写少；单键操作天然原子，无需额外锁 |
+| `CalculationHistory`（`InMemoryCalculationHistory`） | `ArrayDeque<Calculation>` | `ReentrantReadWriteLock` | 有**容量上限**，插入时必须原子地完成"追加 + 淘汰最旧"，`ConcurrentLinkedDeque` 无法保证精确边界；读操作占比高，读锁可并发 |
 
 **历史淘汰策略为 FIFO（淘汰最旧），不是 LRU。** 理由：
 
@@ -434,26 +499,29 @@ calculator:
 
 分层覆盖，内核层要求分支全覆盖。
 
-| 测试类 | 覆盖内容 |
-|---|---|
-| `LexerTest` | 分词正确性、位置信息、非法字符报错、数字字面量各形态 |
-| `ExpressionParserTest` | AST 结构断言；**每个语法错误的 `position` 断言**；优先级与结合性（§6.3 全部三条） |
-| `EvaluatorTest` | 四则、优先级、一元正负号、阶乘边界（0!、170!、171! 报错）、全部函数、全部定义域错误 |
-| `PrecisionTest` | `0.1+0.2` 精确等于 `0.3`；`1/3` 的 DECIMAL128 行为；Decimal/Floating 提升规则 |
-| `FunctionRegistryTest` | 注册表完整性、未知名处理、一元/二元元数校验 |
-| `OperatorTableTest` | `precedence` 数值与 §7.2 清单一致（防止清单与实现漂移） |
-| `InMemoryCalculationHistoryStoreTest` | 容量淘汰边界（FIFO 顺序）、并发写、分页 |
-| `InMemoryVariableStoreTest` | 覆盖写、并发读写、删除 |
-| `CalculationServiceTest` | 历史落库、请求级变量覆盖存储中的用户变量、**请求级变量使用保留名被拒（400）**、角度单位传递 |
-| `VariableServiceTest` | **禁用集合校验**（函数名、保留常量名、非法格式、超长名） |
-| `*ControllerTest` | `@WebMvcTest` + MockMvc，断言每个错误码与响应体结构 |
-| `CalculatorEndToEndTest` | `@SpringBootTest(RANDOM_PORT)` 全链路：算 → 查历史 → 定义变量 → 用变量再算 |
+| 测试类 | 层 | 覆盖内容 |
+|---|---|---|
+| `LexerTest` | domain | 分词正确性、位置信息、非法字符报错、数字字面量各形态 |
+| `ExpressionParserTest` | domain | AST 结构断言；**每个语法错误的 `position` 断言**；优先级与结合性（§6.3 全部三条） |
+| `ExpressionEvaluatorTest` | domain | 四则、优先级、一元正负号、阶乘边界（0!、170!、171! 报错）、全部函数、全部定义域错误 |
+| `PrecisionTest` | domain | `0.1+0.2` 精确等于 `0.3`；`1/3` 的 DECIMAL128 行为；Decimal/Floating 提升规则 |
+| `FunctionRegistryTest` | domain | 注册表完整性、未知名处理、一元/二元元数校验 |
+| `OperatorTableTest` | domain | `precedence` 数值与 §7.2 清单一致（防止清单与实现漂移） |
+| `VariableNameTest` | domain | **`VariableName` 值对象构造即校验**：函数名、保留常量名、非法格式、超长名一律构造失败 |
+| `InMemoryCalculationHistoryTest` | infrastructure | 容量淘汰边界（FIFO 顺序）、并发写、分页 |
+| `InMemoryVariableSetTest` | infrastructure | 覆盖写、并发读写、删除 |
+| `CalculationUseCaseTest` | application | 历史落库、请求级变量覆盖存储中的用户变量、**请求级变量使用保留名被拒（400）**、角度单位缺省与覆盖 |
+| `ErrorStatusMapperTest` | interfaces | **每个 `CalcErrorCode` 都有 HTTP 状态映射**（防止新增错误码漏映射） |
+| `*ControllerTest` | interfaces | `MockMvcBuilders.standaloneSetup` + 显式挂载 `GlobalExceptionHandler`，断言每个错误码与响应体结构 |
+| `CalculatorEndToEndTest` | 全链路 | `@SpringBootTest(RANDOM_PORT)`：算 → 查历史 → 定义变量 → 用变量再算 |
 
 **关键测试点**：
 
 - **精度测试**是本设计数值模型的存在理由，必须精确断言（`assertEquals` 而非 delta 比较）
 - **`OperatorTableTest` 断言清单与实现一致**：`/functions` 返回的优先级表是手写还是从 `OperatorTable` 生成，这条测试决定了两者不会漂移。**实现上直接由 `OperatorTable` 生成该清单**，测试只做兜底
-- **并发测试**：`CountDownLatch` + 多线程（8 线程 × 1000 次）验证存储层无丢失更新，断言最终状态精确
+- **并发测试**：`CountDownLatch` + 多线程（8 线程 × 1000 次）验证聚合根实现无丢失更新，断言最终状态精确
+- **控制器测试用 `standaloneSetup` 而非 `@WebMvcTest`**：`@WebMvcTest` 会拉起 Spring 切片上下文，而本项目的控制器行为几乎不依赖容器特性（无过滤器、无拦截器、无安全）。`standaloneSetup` 更快，且能**显式挂载 `GlobalExceptionHandler`**——错误码路径因此被真实覆盖，而不是依赖"切片扫描恰好扫到了它"
+- **`ErrorStatusMapperTest` 遍历 `CalcErrorCode.values()` 断言每个值都有映射**：这条测试是防漂移的守门人。映射表若与枚举分处两地且无人看守，新增错误码会静默退化成 500
 
 ## 11. 交付物
 
@@ -476,6 +544,8 @@ scientific-calculator/
 
 本节记录评审中**做了但被推翻**的设计。保留否定方案的理由比只留结论更有价值——它说明边界是被论证出来的，不是随手划的。
 
+D1–D9 出自 v1→v2 评审（收敛功能边界）；D10–D13 出自 v2→v3 评审（改换架构风格）。D12 记录的是**否决**——即"决定不引入某模式"，与 D1–D6 同类。
+
 | # | 决策 | 结论 | 理由 |
 |---|---|---|---|
 | **D1** | v1 设计了 `POST /binary`、`POST /unary` 结构化算子接口 | **砍掉** | 功能被 `/calculate` 完全覆盖：`{operator:"add",left:1,right:2}` 与 `{expression:"1+2"}` 语义等价。唯一站得住的理由是"客户端不必拼字符串"，但 §7.2 的算子清单暴露了符号映射后，客户端照清单拼即可，该理由不成立。**连带简化**：历史记录的 `type` 字段失去意义，一并删除 |
@@ -487,6 +557,10 @@ scientific-calculator/
 | **D7** | `/health` 是否保留 | **保留** | 价值低（仅冒烟测试与探针惯例）但成本近零（5 行），且直接服务验收标准第 2 条 |
 | **D8** | `/functions` 的定位 | **能力清单** | v1 把它写成并列的两个列表，导致 `^` 与 `pow` 看起来像两种能力。改为如实描述表达式语法（算子含 `fixity`/`precedence`/`associativity`），并**由 `OperatorTable` 直接生成**，杜绝清单与实现漂移 |
 | **D9** | Spring Boot 版本 | **4.1.1 → 3.5.x** | 原脚手架为 4.1.1，题目文字约束为"SpringBoot3"，以题目为准 |
+| **D10** | v2 的分层是 `core / api / service / store / config` | **改为 DDD 四层** `domain / application / infrastructure / interfaces` | 原分层是**技术分层**：`core` 是"纯计算"，`store` 是"存储"，`service` 是"服务"——按代码的技术角色划分。DDD 四层按**依赖方向与职责边界**划分，`domain` 承载全部业务规则、`application` 只做编排。真正的收益有三处（见 D11–D13），其余是改名，此表中如实区分 |
+| **D11** | 聚合根（`VariableSet`）与仓储（`VariableRepository`）是否分成两个类型 | **合并**——领域层声明聚合根接口，基础设施层提供内存实现 | 教科书式分离的前提是**存在持久化**：加载要查库、保存要写库，是真实的、可能失败的操作，值得单独抽象并承载事务语义。本系统纯内存，聚合根本身就是存储，再加一层仓储只是把调用原样转发一遍。**为不存在的复杂度预留抽象不是设计，是负债** |
+| **D12** | 是否引入领域事件（如 `CalculationPerformed`）+ 事件发布器 | **不引入** | 领域事件的价值在于**跨聚合、跨上下文的最终一致性**。本设计只有一个限界上下文、只有一个聚合需要在计算后被写入，且该写入是同步的、属于同一个用例——用事件解耦等于把一个方法调用拆成"发布 + 监听"两跳，只增加间接层。**在文档里说明为什么不引入，比引入了更值钱**；同理不做规约模式、工厂类、CQRS |
+| **D13** | `VariableName` 的保留名校验放在哪 | **全部放进值对象的规范构造器**，不引入领域服务 | 采纳过程中曾被否决的中间方案：既然保留名依赖函数表，而值对象构造器"拿不到外部上下文"，那就加一个领域服务 `VariableNames`（持有 `ReservedNames`）来产出 `VariableName`。**此方案被推翻**——函数集（`UnaryFunction`/`BinaryFunction`）与常量集（`MathematicalConstant`）都是编译期固定的枚举，保留名集合静态可求，压根不是"运行时上下文"。既然构造器能独立完成格式、长度、保留名三项校验，那层领域服务就是多余的间接层。相比 v2 的 `VariableService.validateVariableName()`（调用方需从另一个服务上调它，漏调即失效），这里校验在类型里，没有旁路 |
 
 ## 13. 风险与已知取舍
 
