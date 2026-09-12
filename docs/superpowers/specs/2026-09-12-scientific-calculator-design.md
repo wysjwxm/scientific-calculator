@@ -222,8 +222,12 @@ record FloatingNumber(double value)    implements CalcNumber { }
 | 除法结果 | 能整除则精确；除不尽按配置精度（默认 **34 位有效数字**，`HALF_EVEN`） | `calculator.division-precision` |
 | 表达式长度 | `calculator.max-expression-length`（默认 1000） | `CalculationPolicy` |
 | 整数指数的精确路径 | 指数为非负整数且估算位数在预算内 | `Numbers.power` |
+| 反双曲函数的自变量 | `\|x\| ≤ √Double.MAX_VALUE`（≈ `1.34e154`） | `UnaryFunction` 手写恒等式的 `x²` 中间量 |
+| `round` 的自变量 | `\|x\| < 2^63` | `Math.round` 返回 64 位整数 |
 
 换算成使用者视角，可依赖的范围是：**普通十进制的加减乘除与整数幂精确无误差；超越函数（`sin`/`log`/`exp` 等）约 15 位有效数字；除法至多 34 位有效数字；数值量级不超出 IEEE-754 `double`（约 `1.8e±308`）。**
+
+最后两行是**刻意收窄**的边界，收窄的理由值得记下来：`asinh(1e200)` 的真值约 `461.2`、完全落在 `double` 域内，但手写恒等式里的 `x²` 会先溢出 —— 与其写一个只在极端大数上才不同的稳定形式，不如把上界写明。**声明的范围就是保证正确的范围**；把边界写成公开数字，比让用户自己去撞要诚实（§5.3.3）。若将来确需扩展，标准解法是 `log|x| + log1p(√(1+1/x²))` 形式，对 `x→∞` 退化到 `log|x| + log2`，无中间溢出。
 
 #### 5.3.2 范围之外：拒收，不做特殊处理
 
