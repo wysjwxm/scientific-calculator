@@ -26,7 +26,7 @@ class CalculationUseCaseTest {
 
     private final FunctionRegistry registry = new FunctionRegistry();
     private final Numbers numbers = new Numbers(34);
-    private final CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000);
+    private final CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000, 34);
     private final CalculationUseCase useCase = new CalculationUseCase(
             new ExpressionParser(), new ExpressionEvaluator(registry, numbers), policy);
 
@@ -63,7 +63,7 @@ class CalculationUseCaseTest {
 
     @Test
     void rejectsExpressionExceedingPolicyLimit() {
-        CalculationPolicy tightPolicy = new CalculationPolicy(AngleUnit.DEGREE, 10);
+        CalculationPolicy tightPolicy = new CalculationPolicy(AngleUnit.DEGREE, 10, 34);
         CalculationUseCase tight = new CalculationUseCase(
                 new ExpressionParser(), new ExpressionEvaluator(registry, numbers), tightPolicy);
         assertThatThrownBy(() -> tight.calculate(CalculationCommand.of("1+".repeat(20) + "1")))

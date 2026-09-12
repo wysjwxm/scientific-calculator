@@ -15,8 +15,9 @@ public record DecimalNumber(BigDecimal value) implements CalcNumber {
      *  HTTP 500。界取 10 万，与 Numbers 的精确幂位数预算同量级：1E±100000 之外没有
      *  真实用途，界内最坏的对齐开销是 20 万位，实测约 7 毫秒（见报告）。
      *  判据写成两次比较而不是 Math.abs —— Math.abs(Integer.MIN_VALUE) 是负数，
-     *  用绝对值的写法会漏掉 scale = Integer.MIN_VALUE 这唯一一个值。 */
-    private static final int MAX_SCALE_MAGNITUDE = 100_000;
+     *  用绝对值的写法会漏掉 scale = Integer.MIN_VALUE 这唯一一个值。
+     *  已作为能力清单的 limits 对外发布，故为 public（值与语义不变）。 */
+    public static final int MAX_SCALE_MAGNITUDE = 100_000;
 
     public DecimalNumber {
         Objects.requireNonNull(value, "value");

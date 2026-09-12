@@ -12,23 +12,36 @@ import java.util.function.DoubleBinaryOperator;
 /**
  * 5 个二元函数 —— 只收录无法用中缀运算符表达的运算（spec §6.5）。
  * 幂与取余已有 ^ 与 % 两种中缀写法，因此不在此注册。
+ *
+ * <p>二元函数与一元不同：它们的定义域约束随函数而变（只有 log 有约束），写在
+ * {@link #checkDomain} 的代码里，没有可枚举的定义域类型。故这里用
+ * {@code domainDescription} 承载**给人读的**边界文案，供能力清单展示。
+ * {@link #checkDomain} 仍是唯一的强制点 —— 绝不许改成读这个字段来判定。
  */
 public enum BinaryFunction implements MathFunction {
 
-    HYPOT("hypot", false, Math::hypot),
-    MAX("max", false, Math::max),
-    MIN("min", false, Math::min),
-    ATAN2("atan2", true, Math::atan2),
-    LOG("log", false, (x, base) -> Math.log(x) / Math.log(base));
+    HYPOT("hypot", false, "任意实数",
+            "直角三角形斜边 sqrt(x²+y²)，无中间溢出", Math::hypot),
+    MAX("max", false, "任意实数", "两个参数中的较大值", Math::max),
+    MIN("min", false, "任意实数", "两个参数中的较小值", Math::min),
+    ATAN2("atan2", true, "任意实数",
+            "atan2(y, x)：按点 (x, y) 所在象限返回角度。两个入参是比值不换算，返回值按 angleUnit 换算",
+            Math::atan2),
+    LOG("log", false, "真数 > 0，且底数 > 0 且底数 ≠ 1", "对数 log(真数, 底数)",
+            (x, base) -> Math.log(x) / Math.log(base));
 
     private final String functionName;
     private final boolean angleSensitive;
+    private final String domainDescription;
+    private final String description;
     private final DoubleBinaryOperator implementation;
 
-    BinaryFunction(String functionName, boolean angleSensitive,
-                   DoubleBinaryOperator implementation) {
+    BinaryFunction(String functionName, boolean angleSensitive, String domainDescription,
+                   String description, DoubleBinaryOperator implementation) {
         this.functionName = functionName;
         this.angleSensitive = angleSensitive;
+        this.domainDescription = domainDescription;
+        this.description = description;
         this.implementation = implementation;
     }
 
@@ -45,6 +58,16 @@ public enum BinaryFunction implements MathFunction {
     @Override
     public boolean angleSensitive() {
         return angleSensitive;
+    }
+
+    @Override
+    public String description() {
+        return description;
+    }
+
+    /** 参数的定义域边界，供能力清单展示。强制点仍是 {@link #checkDomain}。 */
+    public String domainDescription() {
+        return domainDescription;
     }
 
     @Override

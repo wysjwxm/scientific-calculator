@@ -2,6 +2,7 @@ package com.wysjwxm.calculator.infrastructure.config;
 
 import com.wysjwxm.calculator.application.CalculationPolicy;
 import com.wysjwxm.calculator.application.CalculationUseCase;
+import com.wysjwxm.calculator.application.CapabilityQuery;
 import com.wysjwxm.calculator.domain.model.expression.eval.ExpressionEvaluator;
 import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
 import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
@@ -27,8 +28,9 @@ import org.springframework.context.annotation.Configuration;
  * {@link CalculatorProperties} 根本不是上下文里的 Bean，application.yaml 里
  * {@code calculator.*} 的键一个都不会被绑定 —— 键名拼错了也没有任何信号。
  *
- * <p>本期是 MVP：只装配求值路径的 6 个 Bean，变量与历史相关的装配
- * （VariableSet / CalculationHistory / 对应用例）属 Phase 2，见 docs/mvp-and-roadmap.md。
+ * <p>本期是 MVP：装配求值路径的 6 个 Bean，外加能力清单用例（{@link CapabilityQuery}）；
+ * 变量与历史相关的装配（VariableSet / CalculationHistory / 对应用例）属 Phase 2，
+ * 见 docs/mvp-and-roadmap.md。
  */
 @Configuration
 @EnableConfigurationProperties(CalculatorProperties.class)
@@ -59,7 +61,7 @@ public class CalculatorConfiguration {
     @Bean
     public CalculationPolicy calculationPolicy(CalculatorProperties properties) {
         return new CalculationPolicy(properties.defaultAngleUnit(),
-                properties.maxExpressionLength());
+                properties.maxExpressionLength(), properties.divisionPrecision());
     }
 
     @Bean
@@ -67,5 +69,10 @@ public class CalculatorConfiguration {
                                                  ExpressionEvaluator expressionEvaluator,
                                                  CalculationPolicy calculationPolicy) {
         return new CalculationUseCase(expressionParser, expressionEvaluator, calculationPolicy);
+    }
+
+    @Bean
+    public CapabilityQuery capabilityQuery(CalculationPolicy calculationPolicy) {
+        return new CapabilityQuery(calculationPolicy);
     }
 }

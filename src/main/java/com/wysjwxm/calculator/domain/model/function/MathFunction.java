@@ -23,5 +23,8 @@ public interface MathFunction {
     /** 是否受角度单位影响（三角函数、反三角函数、atan2）。 */
     boolean angleSensitive();
 
+    /** 面向调用方的一句话说明：这个函数算什么。中文，不含营销词。 */
+    String description();
+
     CalcNumber apply(List<CalcNumber> args, AngleUnit angleUnit, Numbers numbers);
 }

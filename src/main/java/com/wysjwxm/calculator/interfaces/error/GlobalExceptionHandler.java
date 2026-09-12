@@ -58,8 +58,9 @@ public class GlobalExceptionHandler {
 
     /** 路径变量或查询参数类型不符，例如 /history/abc。
      *
-     * <p>本期不可达：MVP 只有 {@code POST /calculate} 与 {@code GET /health}，
-     * 都不绑定路径变量或查询参数。保留而非删除是刻意的 —— 它是 spec §7.6 错误码表里
+     * <p>本期不可达：MVP 的三个端点（{@code GET /health}、{@code POST /calculate}、
+     * {@code GET /functions}）都不绑定路径变量或查询参数。
+     * 保留而非删除是刻意的 —— 它是 spec §7.6 错误码表里
      * 「类型不符」那一行的实现，Phase 2 加入带路径变量的端点后即生效；
      * 错误码词汇表同样刻意保持完整（见 docs/mvp-and-roadmap.md §五）。 */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

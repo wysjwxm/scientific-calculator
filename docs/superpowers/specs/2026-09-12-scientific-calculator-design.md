@@ -377,9 +377,23 @@ args       → expression (',' expression)*
 
 ```json
 {
-  "constants": ["pi", "e"],
-  "unaryFunctions":  ["sin", "cos", "...", "sign"],
-  "binaryFunctions": ["hypot", "max", "min", "atan2", "log"],
+  "endpoints": [
+    { "method": "GET",  "path": "/health",                      "description": "健康检查：返回服务状态与已运行时长" },
+    { "method": "POST", "path": "/api/v1/calculator/calculate", "description": "求值一个表达式" },
+    { "method": "GET",  "path": "/api/v1/calculator/functions", "description": "本接口：服务能力清单" }
+  ],
+  "constants": [
+    { "name": "pi", "value": 3.141592653589793, "description": "圆周率" },
+    { "name": "e",  "value": 2.718281828459045, "description": "自然对数的底" }
+  ],
+  "unaryFunctions": [
+    { "name": "sin", "arity": 1, "angleSensitive": true,  "domain": "任意实数",      "description": "正弦。入参按 angleUnit 解释为角度或弧度，返回比值" },
+    { "name": "ln",  "arity": 1, "angleSensitive": false, "domain": "正实数（x > 0）", "description": "自然对数" }
+  ],
+  "binaryFunctions": [
+    { "name": "hypot", "arity": 2, "angleSensitive": false, "domain": "任意实数",                         "description": "直角三角形斜边 sqrt(x²+y²)，无中间溢出" },
+    { "name": "log",   "arity": 2, "angleSensitive": false, "domain": "真数 > 0，且底数 > 0 且底数 ≠ 1", "description": "对数 log(真数, 底数)" }
+  ],
   "operators": [
     { "symbol": "+", "fixity": "INFIX",   "precedence": 1, "associativity": "LEFT"  },
     { "symbol": "-", "fixity": "INFIX",   "precedence": 1, "associativity": "LEFT"  },
@@ -392,9 +406,19 @@ args       → expression (',' expression)*
     { "symbol": "!", "fixity": "POSTFIX", "precedence": 5, "associativity": null    }
   ],
   "angleUnits": ["DEGREE", "RADIAN"],
-  "defaultAngleUnit": "DEGREE"
+  "defaultAngleUnit": "DEGREE",
+  "limits": {
+    "maxExpressionLength": 1000,
+    "divisionPrecision": 34,
+    "maxExactPowerDigits": 100000,
+    "maxDecimalScaleMagnitude": 100000
+  }
 }
 ```
+
+> **本期扩展**：`endpoints`、各条目上的 `description` 与 `limits` 是本次新增的三块。原有六个字段（`constants` / `unaryFunctions` / `binaryFunctions` / `operators` / `angleUnits` / `defaultAngleUnit`）仍在，语义不变；只是 `constants` 与两个函数清单由「纯名字数组」升级为「带说明与定义域边界的对象数组」。`unaryFunctions` / `binaryFunctions` 上面各举两例示意字段形状，实际按枚举声明顺序返回全部 23 / 5 个。
+>
+> **顺序即契约**：`constants` 与两个函数清单按枚举声明顺序，`operators` 按算子表的既有顺序 —— 不排序、不去重。清单内容不从这份 JSON 抄写，而是由 `OperatorTable` 与领域枚举直接生成（D8），因此清单与实现不可能漂移。
 
 `precedence` 语义：**数值越大结合越紧**（`+`=1 最松，`!`=5 最紧）。该字段是行为契约的一部分，客户端据此可判断 `1+2*3` 的求值顺序。
 

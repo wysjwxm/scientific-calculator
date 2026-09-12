@@ -31,7 +31,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 后来 CalculatorEndToEndTest 从真实 HTTP 栈补齐了 404 / 400 / 422 的平行证据 ——
  * 两处覆盖互补（本类快、能显式挂载 advice；那个类真、钉住路由与消息转换器），不是冗余。
  *
- * <p>本期是 MVP：没有变量存储与历史，故没有 PUT 变量、历史、/functions 清单的用例。
+ * <p>本期是 MVP：没有变量存储与历史，故没有 PUT 变量与历史的用例；/functions 清单
+ * 由同包的 {@code CapabilityControllerTest} 覆盖。
  *
  * <p><b>本类的 ObjectMapper 与生产栈不一致</b>：{@code standaloneSetup} 用的 mapper 与 Boot
  * 自动配置的 ObjectMapper **都注册了 {@code jackson-datatype-jsr310}**（{@code getRegisteredModuleIds()}
@@ -50,7 +51,7 @@ class CalculatorControllerTest {
     void setUp() {
         FunctionRegistry registry = new FunctionRegistry();
         Numbers numbers = new Numbers(34);
-        CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000);
+        CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000, 34);
         CalculationUseCase useCase = new CalculationUseCase(
                 new ExpressionParser(),
                 new ExpressionEvaluator(registry, numbers),
@@ -114,7 +115,7 @@ class CalculatorControllerTest {
         // angleUnit 为 null 时字段照常出现、值为 null —— 这是本期的设计选择：
         // CalculateResponse 上没有 @JsonInclude(NON_NULL)，键一定在。
         // 故断言 null 值，而非 doesNotExist()（后者要求键不存在）。
-        // 注意：spec 未规定求值响应的 null 形态；spec :420 的「其余记录该字段为 null」
+        // 注意：spec 未规定求值响应的 null 形态；spec :444 的「其余记录该字段为 null」
         // 讲的是历史记录，不是这里。
         calculate("{\"expression\":\"1+2\"}")
                 .andExpect(status().isOk())

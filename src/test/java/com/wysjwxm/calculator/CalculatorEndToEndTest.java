@@ -24,7 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>它是 {@code mvn test} 的一部分 —— 内嵌容器在测试 JVM 内部、临时端口、测试结束
  * 即关，不是常驻服务。
  *
- * <p>本期是 MVP：断言只覆盖求值路径（没有历史、变量存储与能力清单）。
+ * <p>本期是 MVP：断言只覆盖求值路径（没有历史与变量存储）。能力清单端点在真实栈上
+ * 由 {@link CapabilityEndToEndTest} 覆盖，两者基座相同、断言互补。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class CalculatorEndToEndTest {

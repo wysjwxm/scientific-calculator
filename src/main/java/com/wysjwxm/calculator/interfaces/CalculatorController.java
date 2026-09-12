@@ -23,8 +23,8 @@ import java.util.Map;
  * <p>本类承担防腐层职责：把 JSON DTO 翻译成应用层命令，再把领域对象翻译回
  * 响应 DTO。领域类型不直接充当传输契约。
  *
- * <p>本期是 MVP：没有变量存储与历史，故没有 /functions 清单、变量与历史端点
- * （Phase 2 补，见 docs/mvp-and-roadmap.md）。
+ * <p>本期是 MVP：没有变量存储与历史，故没有变量与历史端点（Phase 2 补，见
+ * docs/mvp-and-roadmap.md）；能力清单由同包的 {@link CapabilityController} 提供。
  */
 @RestController
 @RequestMapping("/api/v1/calculator")

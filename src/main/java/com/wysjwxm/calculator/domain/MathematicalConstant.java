@@ -19,20 +19,27 @@ import java.util.Set;
  */
 public enum MathematicalConstant {
 
-    PI("pi", Math.PI),
-    E("e", Math.E);
+    PI("pi", Math.PI, "圆周率"),
+    E("e", Math.E, "自然对数的底");
 
     private final String symbol;
     private final double rawValue;
+    private final String description;
 
-    MathematicalConstant(String symbol, double rawValue) {
+    MathematicalConstant(String symbol, double rawValue, String description) {
         this.symbol = symbol;
         this.rawValue = rawValue;
+        this.description = description;
     }
 
     /** 语言中的常量名（小写）。注意不能用 {@code name()} —— 那会返回枚举标识符 "PI"。 */
     public String symbol() {
         return symbol;
+    }
+
+    /** 面向调用方的一句话说明。说明住在枚举里，能力清单不再另写一张表。 */
+    public String description() {
+        return description;
     }
 
     public CalcNumber value() {
@@ -53,7 +60,7 @@ public enum MathematicalConstant {
      *
      * <p>刻意不用 {@code Set.copyOf}：{@code java.util.ImmutableCollections} 会随机化
      * 元素顺序，同一份代码在不同 JVM 运行中迭代出的顺序可能不同。这个集合会喂给
-     * Phase 2 的 /functions 能力清单，顺序漂移意味着清单每次启动都不一样，测试也会
+     * /functions 能力清单，顺序漂移意味着清单每次启动都不一样，测试也会
      * 随机变红。用 LinkedHashSet 固定顺序，再包一层不可修改视图防止外部改动。
      */
     public static Set<String> names() {

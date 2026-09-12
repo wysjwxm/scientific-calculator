@@ -28,8 +28,9 @@ public final class Numbers {
      *  预算只卡未缩放值的位数，管不到 scale：1E+21475 的 precision 是 1，估算落在预算内，
      *  但 pow 会把 scale 推出 int 范围并抛 ArithmeticException，故精确调用处保留了 try/catch。
      *  降级后可能得到有限的近似值，也可能被 requireFinite 拒收 —— 预算卡的是精确
-     *  路径的计算量，并不是因为 double 一定装不下。 */
-    private static final int MAX_EXACT_DIGITS = 100_000;
+     *  路径的计算量，并不是因为 double 一定装不下。
+     *  已作为能力清单的 limits 对外发布，故为 public（值与语义不变）。 */
+    public static final int MAX_EXACT_DIGITS = 100_000;
 
     /** double 约 15~17 位有效数字：按 15 位有效数字规整，抹掉运算末位的噪声
      *  （如 sin(30°) 的 0.49999999999999994 → 0.5）。代价是绝大多数计算结果的
