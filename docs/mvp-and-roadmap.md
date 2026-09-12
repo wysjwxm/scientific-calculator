@@ -101,7 +101,7 @@
 | 无变量 | 表达式只能算常量表达式，不能存中间结果 | Phase 2 第一优先，因为它影响接口形态 |
 | 无历史 | 服务无状态、不可回溯 | Phase 2，与变量并列 |
 | 错误码词汇表比 MVP 实际用到的多 | 有两个码（`VARIABLE_NOT_FOUND`、`HISTORY_NOT_FOUND`）在 MVP 中不会被触发 —— 注意 `UNKNOWN_VARIABLE`（未定义变量）**会被**触发：`y+1` 即得 422 `UNKNOWN_VARIABLE` | Phase 2 补上对应能力后自然消化；词汇表保持完整是刻意的，避免 Phase 2 改动接口契约 |
-| 请求级变量已做保留名校验，但**没有变量存储** | `POST /api/v1/calculator/calculate` 仍接受请求体的 `variables` 映射（spec §7.1 的请求形态不变）；键落在禁用集合（函数名 ∪ 保留常量名，spec §6.4）内时返回 400 `INVALID_REQUEST`，与 spec :367 一致。求值器内部亦把常量置于变量之前，使「常量优先级高于变量」不依赖调用方是否经过校验 | 变量存储（定义后跨请求参与计算）仍属 Phase 2；届时按 D13 把命名校验收口到 `VariableName` 值对象，替换当前放在 `CalculationCommand` 的校验 |
+| 请求级变量已做保留名校验，但**没有变量存储** | `POST /api/v1/calculator/calculate` 仍接受请求体的 `variables` 映射（spec §7.1 的请求形态不变）；键落在禁用集合（函数名 ∪ 保留常量名，spec §6.4）内时返回 400 `INVALID_REQUEST`，与 spec :372 一致。求值器内部亦把常量置于变量之前，使「常量优先级高于变量」不依赖调用方是否经过校验 | 变量存储（定义后跨请求参与计算）仍属 Phase 2；届时按 D13 把命名校验收口到 `VariableName` 值对象，替换当前放在 `CalculationCommand` 的校验 |
 | 评审深度低于原计划 | 变量/历史两块的缺陷要到 Phase 2 才暴露 | Phase 2 动工前先补一次评审 |
 | 内存实现无持久化 | 重启即丢 | 若需求变成「多实例/持久化」，需要重新做架构决策（当前明确不引入存储） |
 | 静态资源映射被显式关闭（`spring.web.resources.add-mappings: false`） | 未匹配路径才会走 `NoHandlerFoundException` → 统一 404 + `NO_HANDLER`；**这是唯一的承重配置** —— `spring.mvc.throw-exception-if-no-handler-found` 自 Boot 3.2 起已废弃且实测无效，**不要加** | 升级 Spring Boot 时**必须重测 404 路径**：`CalculatorEndToEndTest.unknownPathReturns404WithNoHandlerCode` 变红即为信号 |
