@@ -1,7 +1,6 @@
 package com.wysjwxm.calculator.interfaces;
 
 import com.wysjwxm.calculator.application.CalculationCommand;
-import com.wysjwxm.calculator.application.CalculationPolicy;
 import com.wysjwxm.calculator.application.CalculationUseCase;
 import com.wysjwxm.calculator.domain.error.CalcErrorCode;
 import com.wysjwxm.calculator.domain.error.CalcException;
@@ -32,11 +31,9 @@ import java.util.Map;
 public class CalculatorController {
 
     private final CalculationUseCase calculationUseCase;
-    private final CalculationPolicy policy;
 
-    public CalculatorController(CalculationUseCase calculationUseCase, CalculationPolicy policy) {
+    public CalculatorController(CalculationUseCase calculationUseCase) {
         this.calculationUseCase = calculationUseCase;
-        this.policy = policy;
     }
 
     @PostMapping("/calculate")

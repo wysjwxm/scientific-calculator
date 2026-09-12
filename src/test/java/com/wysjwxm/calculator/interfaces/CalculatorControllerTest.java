@@ -30,6 +30,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 因此这里的每条状态码与错误码断言都是那个 handler 唯一的行为证据。
  *
  * <p>本期是 MVP：没有变量存储与历史，故没有 PUT 变量、历史、/functions 清单的用例。
+ *
+ * <p><b>本类的 ObjectMapper 与生产栈不一致</b>：{@code standaloneSetup} 用的是 Spring Test
+ * 自带的、未注册 {@code JavaTimeModule} 的 ObjectMapper，因此 {@code timestamp} 会被序列化成
+ * 一个十进制小数；真实栈（见 {@code CalculatorEndToEndTest}）走 Boot 自动配置的 ObjectMapper，
+ * 输出 ISO-8601 字符串。**本类不要断言 {@code timestamp} 的形态** —— 目前也没有一条断言碰它。
+ * 要断言就写到真实栈那个测试类里去。
  */
 class CalculatorControllerTest {
 
@@ -45,7 +51,7 @@ class CalculatorControllerTest {
                 new ExpressionEvaluator(registry, numbers),
                 policy);
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new CalculatorController(useCase, policy))
+                .standaloneSetup(new CalculatorController(useCase))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -100,9 +106,11 @@ class CalculatorControllerTest {
 
     @Test
     void angleUnitIsNullForNonTrigExpression() throws Exception {
-        // angleUnit 为 null 时字段照常出现、值为 null —— spec §7.3 的措辞是
-        // 「其余记录该字段为 null」，不是「字段消失」。这里断言 null 值而非 doesNotExist()：
-        // 后者要求键不存在，而 CalculateResponse 上没有 @JsonInclude(NON_NULL)，键一定在。
+        // angleUnit 为 null 时字段照常出现、值为 null —— 这是本期的设计选择：
+        // CalculateResponse 上没有 @JsonInclude(NON_NULL)，键一定在。
+        // 故断言 null 值，而非 doesNotExist()（后者要求键不存在）。
+        // 注意：spec 未规定求值响应的 null 形态；spec :420 的「其余记录该字段为 null」
+        // 讲的是历史记录，不是这里。
         calculate("{\"expression\":\"1+2\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.angleUnit").value(Matchers.nullValue()));
@@ -110,6 +118,10 @@ class CalculatorControllerTest {
 
     @Test
     void radianAngleUnitIsHonoured() throws Exception {
+        // 只断言回显：本类的职责是「接口层把 angleUnit 原样翻译成命令、再原样回显」。
+        // RADIAN 的**数值语义**由领域层测试钉住（FunctionRegistryTest 有
+        // apply("sin", AngleUnit.RADIAN, 30) 的数值断言），此处不重复覆盖 ——
+        // 免得读者误以为这条覆盖了弧度算术。
         calculate("{\"expression\":\"sin(30)\",\"angleUnit\":\"RADIAN\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.angleUnit").value("RADIAN"));
@@ -141,6 +153,8 @@ class CalculatorControllerTest {
                 // position 为 null 时该键**不出现**：ErrorResponse 上有 @JsonInclude(NON_NULL)，
                 // 其 javadoc 明确写了「避免调用方误判为 0」—— 这是 Task 13 冻结的对外契约。
                 // 故此处断言键不在场，而不是断言 null 值。
+                // 与上方 angleUnitIsNullForNonTrigExpression 的形态刻意不同：那个响应
+                // 没有 @JsonInclude，字段在场为 null。两处不对称是有意的，不要「统一」。
                 .andExpect(jsonPath("$.position").doesNotExist());
     }
 
