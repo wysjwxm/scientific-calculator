@@ -18,10 +18,15 @@ public final class Numbers {
     /** 阶乘上界：171! 超出 double 范围。 */
     private static final int FACTORIAL_LIMIT = 170;
 
-    /** 精确幂的结果位数预算。按 base 的 precision × 指数估算结果位数：超出预算时
-     *  BigDecimal.pow 会产生天文数字般的中间结果（9^(10000×10000) 约 9542 万位），
-     *  而 double 又装不下，因此直接走浮点路径由 requireFinite 兜底。 */
-    private static final int MAX_EXACT_DIGITS = 10_000;
+    /** 精确幂的**未缩放位数**预算 —— 也就是 BigDecimal 真正要算的数字位数。
+     *  未缩放值的位数为 precision，pow(n) 把它取 n 次方，故 precision × 指数
+     *  恰是结果未缩放值的位数，即精确的计算量（实测 9.0^10000：估 20000 / 实 19543）。
+     *  超出预算就降级到 double，不为一个请求算出上千万位的中间结果
+     *  （(9^10000)^10000 约 9542 万位、58 秒、1 GB），由 requireFinite 兜底。
+     *  上界取自实测：预算内最坏情形约 5 毫秒（0.5^100000 为 69898 位 / 5 毫秒）。
+     *  降级后可能得到有限的近似值，也可能被 requireFinite 拒收 —— 预算卡的是精确
+     *  路径的计算量，并不是因为 double 一定装不下。 */
+    private static final int MAX_EXACT_DIGITS = 100_000;
 
     /** double 约 15~17 位有效数字：按 15 位有效数字规整，抹掉运算末位的噪声
      *  （如 sin(30°) 的 0.49999999999999994 → 0.5）。代价是绝大多数计算结果的

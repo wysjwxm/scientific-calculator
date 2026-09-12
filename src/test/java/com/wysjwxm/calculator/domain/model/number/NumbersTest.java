@@ -104,6 +104,42 @@ class NumbersTest {
     }
 
     @Test
+    void exactPowerToleratesMultiDigitSignificand() {
+        // 预算是「未缩放位数」：9.0 的 precision 为 2，2 × 10000 = 20000 仍在预算内。
+        // 9.0^10000 与 9^10000 是同一个数，字面量的 scale 不该把它推向浮点路径。
+        assertThat(numbers.power(numbers.of(new BigDecimal("9.0")), numbers.of(10_000L)))
+                .isInstanceOf(DecimalNumber.class);
+        assertThat(numbers.power(numbers.of(new BigDecimal("1.5")), numbers.of(5_001L)))
+                .isInstanceOf(DecimalNumber.class);
+        // 1.0^9999 曾经因为预算误判而静默降级成 FloatingNumber(1.0)
+        assertThat(numbers.power(numbers.of(new BigDecimal("1.0")), numbers.of(9_999L)))
+                .isInstanceOf(DecimalNumber.class);
+    }
+
+    @Test
+    void digitBudgetStillBitesJustAboveItsBound() {
+        // 1.5 的未缩放位数是 2：2 × 50001 = 100002 > 100000，必须降级并被 requireFinite 拒收
+        assertThatThrownBy(() -> numbers.power(numbers.of(new BigDecimal("1.5")), numbers.of(50_001L)))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void floatingNumberRejectsNonFiniteDirectly() {
+        // 绕过 Numbers 工厂直接构造也必须被拒：否则 divide/modulo/factorial 会抛
+        // NumberFormatException，变成 500 INTERNAL_ERROR
+        assertThatThrownBy(() -> new FloatingNumber(Double.NaN))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+        assertThatThrownBy(() -> new FloatingNumber(Double.POSITIVE_INFINITY))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
     void normalizationDoesNotFalselyRejectTopOfDoubleRange() {
         // 规整的进位会把 Double.MAX_VALUE 推成 Infinity；此时必须保留原值
         assertThat(numbers.multiply(numbers.floating(Double.MAX_VALUE), numbers.of(1L)).toDouble())
