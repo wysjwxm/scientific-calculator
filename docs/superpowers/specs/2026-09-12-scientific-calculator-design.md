@@ -198,12 +198,12 @@ record FloatingNumber(double value)    implements CalcNumber { }
 | 场景 | 规则 |
 |---|---|
 | `+ - *` 双方均 `DecimalNumber` | 走 `BigDecimal` 原生运算，结果**精确** |
-| `/` | `MathContext.DECIMAL128`（34 位有效数字）。除不尽时 `1/3 → 0.3333333333333333333333333333333333` |
+| `/` | 能整除时**精确**（先试 `dividend.divide(divisor)`）；除不尽按配置精度截断，默认 `MathContext(34, HALF_EVEN)`，故 `1/3 → 0.3333333333333333333333333333333333` |
 | `%`（取余） | 双方 `Decimal` 时走 `BigDecimal.remainder`；否则降级 double |
 | 任一侧为 `FloatingNumber` | 整体提升为 `FloatingNumber`，走 `double` |
 | 超越函数返回值 | 一律 `FloatingNumber` |
 | `^` | 指数为非负整数且底数为 `Decimal` 时，走 `BigDecimal.pow` 保持精确；否则走 `Math.pow` |
-| 结果规整 | double 结果做 `Math.rint` 微调，消除 `sin(30) = 0.49999999999999994` 一类毛刺 |
+| 结果规整 | double 结果按 **15 位有效数字**规整（`MathContext(15)`，`HALF_EVEN`），消除 `sin(30) = 0.49999999999999994` 一类毛刺。代价是绝大多数结果的末 1~2 位被改写，相对误差上限约 `5e-15` |
 
 **保底不变量**：任何运算结果只要落到 `DecimalNumber`，就永远精确；一旦沾了 `FloatingNumber`，即存在浮点误差。此不变量在测试中固定。
 
