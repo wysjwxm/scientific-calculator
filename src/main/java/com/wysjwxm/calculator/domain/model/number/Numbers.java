@@ -25,6 +25,8 @@ public final class Numbers {
      *  （(9^10000)^10000 约 9542 万位、58 秒、1 GB），由 requireFinite 兜底。
      *  上界取自实测：预算内最坏情形 0.5^100000 为 69898 位，冷启动单次约 50~75 毫秒、
      *  预热后约 5 毫秒；拒绝路径不受影响，仍在毫秒级。
+     *  预算只卡未缩放值的位数，管不到 scale：1E+21475 的 precision 是 1，估算落在预算内，
+     *  但 pow 会把 scale 推出 int 范围并抛 ArithmeticException，故精确调用处保留了 try/catch。
      *  降级后可能得到有限的近似值，也可能被 requireFinite 拒收 —— 预算卡的是精确
      *  路径的计算量，并不是因为 double 一定装不下。 */
     private static final int MAX_EXACT_DIGITS = 100_000;
@@ -113,7 +115,15 @@ public final class Numbers {
                 BigDecimal estimatedDigits = BigDecimal.valueOf(base.toDecimal().precision())
                         .multiply(exp);
                 if (estimatedDigits.compareTo(BigDecimal.valueOf(MAX_EXACT_DIGITS)) <= 0) {
-                    return new DecimalNumber(base.toDecimal().pow(exp.intValueExact()));
+                    try {
+                        return new DecimalNumber(base.toDecimal().pow(exp.intValueExact()));
+                    } catch (ArithmeticException overflow) {
+                        // 预算只卡未缩放值的位数，管不到 scale：1E+21475 的 precision 是 1、
+                        // 估算恰好落在预算内，但 pow(100000) 会把 scale 推出 int 范围。
+                        // 这类溢出同样降级到 double，由 requireFinite 兜底 —— 不能让
+                        // ArithmeticException 逃出领域 API（那会变成 500 INTERNAL_ERROR）。
+                        return floatingFinite(Math.pow(base.toDouble(), exp.doubleValue()), "幂运算");
+                    }
                 }
                 return floatingFinite(Math.pow(base.toDouble(), exp.doubleValue()), "幂运算");
             }

@@ -126,6 +126,25 @@ class NumbersTest {
     }
 
     @Test
+    void exactPowerOverflowingScaleFallsBackInsteadOfEscaping() {
+        // 1E+21475 的 scale 是 -21475、precision 是 1：估算 1 × 100000 恰好落在预算内，
+        // 但 pow 会把 scale 推出 int 范围。必须是领域异常，不能是 ArithmeticException。
+        assertThatThrownBy(() -> numbers.power(
+                numbers.of(new BigDecimal("1E+21475")), numbers.of(100_000L)))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void exactPowerAtTheBudgetBoundaryStaysExact() {
+        // 估算恰好等于预算（1 × 100000），预算下界是闭区间：仍走精确路径。
+        // 若把 <= 改成 <，这里会降级成 FloatingNumber(1.0)，断言即失败。
+        assertThat(numbers.power(numbers.of(1L), numbers.of(100_000L)))
+                .isInstanceOf(DecimalNumber.class);
+    }
+
+    @Test
     void floatingNumberRejectsNonFiniteDirectly() {
         // 绕过 Numbers 工厂直接构造也必须被拒：否则 divide/modulo/factorial 会抛
         // NumberFormatException，变成 500 INTERNAL_ERROR
