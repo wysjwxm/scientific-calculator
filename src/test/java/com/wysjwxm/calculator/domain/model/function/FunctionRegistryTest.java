@@ -94,9 +94,11 @@ class FunctionRegistryTest {
         assertValue("asin", AngleUnit.DEGREE, 30.0, 0.5);
         assertValue("acos", AngleUnit.DEGREE, 60.0, 0.5);
         assertValue("atan", AngleUnit.DEGREE, 45.0, 1);
-        assertValue("asin", AngleUnit.RADIAN, Math.asin(0.5), 0.5);
-        assertValue("acos", AngleUnit.RADIAN, Math.acos(0.5), 0.5);
-        assertValue("atan", AngleUnit.RADIAN, Math.PI / 4, 1);
+        // RADIAN 对照项写成**冻结的十进制字面量**，不在测试里调用实现所用的同一个
+        // Math 方法：期望值与实现同源的话，实现改了期望值跟着改，两边一起错就没人发现。
+        assertValue("asin", AngleUnit.RADIAN, 0.5235987755982989, 0.5);
+        assertValue("acos", AngleUnit.RADIAN, 1.0471975511965979, 0.5);
+        assertValue("atan", AngleUnit.RADIAN, 0.7853981633974483, 1);
     }
 
     @Test
@@ -260,6 +262,18 @@ class FunctionRegistryTest {
         // 「加 0.5 后向下取整」的既有语义（round(-2.5) = -2）。
         assertValue("round", AngleUnit.RADIAN, 1e18, 1e18);
         assertThat(apply("round", AngleUnit.RADIAN, -2.5).toDouble()).isEqualTo(-2.0);
+    }
+
+    @Test
+    void roundPicksTheNearestIntegerNotTheCeiling() {
+        // 既有的 round 断言全落在 2.5 / -2.5 / 1e18 上，而在这些点上 ceil 与朝零截断
+        // 与 Math.round **恰好同值** —— 把实现换成 Math::ceil，整套测试全绿（floor 只因
+        // round(2.5) ≠ floor(2.5) 而侥幸被拦）。「就近取整」这个核心语义要靠非 .5 的值才
+        // 钉得住：2.3 挡 ceil（ceil(2.3) = 3），2.7 挡 floor 与朝零截断（两者都给 2），
+        // -2.3 钉住负数侧同样按「就近」而不是朝零截断。
+        assertThat(apply("round", AngleUnit.RADIAN, 2.3).toDouble()).isEqualTo(2.0);
+        assertThat(apply("round", AngleUnit.RADIAN, 2.7).toDouble()).isEqualTo(3.0);
+        assertThat(apply("round", AngleUnit.RADIAN, -2.3).toDouble()).isEqualTo(-2.0);
     }
 
     // ---------- 元数 ----------
