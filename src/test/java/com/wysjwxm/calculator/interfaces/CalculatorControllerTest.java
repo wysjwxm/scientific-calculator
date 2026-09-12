@@ -26,9 +26,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * standaloneSetup 更快，且能**显式挂载 GlobalExceptionHandler** ——
  * 错误码路径因此被真实覆盖，而不是依赖切片扫描恰好扫到它。
  *
- * <p><b>本类同时是 GlobalExceptionHandler 的首次真实覆盖</b>：Task 13 交付它时只有
+ * <p><b>本类是 GlobalExceptionHandler 的**第一处**真实覆盖</b>：Task 13 交付它时只有
  * ErrorStatusMapperTest 测到映射表，下面的 400 / 422 分支要等控制器存在后才走得到。
- * 因此这里的每条状态码与错误码断言都是那个 handler 唯一的行为证据。
+ * 后来 CalculatorEndToEndTest 从真实 HTTP 栈补齐了 404 / 400 / 422 的平行证据 ——
+ * 两处覆盖互补（本类快、能显式挂载 advice；那个类真、钉住路由与消息转换器），不是冗余。
  *
  * <p>本期是 MVP：没有变量存储与历史，故没有 PUT 变量、历史、/functions 清单的用例。
  *

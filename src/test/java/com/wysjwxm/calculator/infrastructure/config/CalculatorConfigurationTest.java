@@ -49,12 +49,11 @@ class CalculatorConfigurationTest {
 
     @Test
     void registersExactlyTheSixEvaluationPathBeans() {
-        // MVP 只装配求值路径的 6 个 Bean。这条断言钉住的是「装配清单」本身。
-        // 其中 5 个都有下游消费者（ExpressionEvaluator 依赖 numbers 与 functionRegistry；
-        // CalculationUseCase 依赖 expressionParser、expressionEvaluator 与 calculationPolicy），
-        // 漏装它们会让上下文**启动失败**。只有 CalculationUseCase 在本期没有任何消费者 ——
-        // 要到 Task 14 的控制器才有人引用它 —— 漏装它时上下文照常起得来，
-        // 这里就成了唯一的探测器。
+        // MVP 只装配求值路径的 6 个 Bean。这条断言钉住的是「装配清单」本身：
+        // 六个现在都有下游消费者（ExpressionEvaluator 依赖 numbers 与 functionRegistry；
+        // CalculationUseCase 依赖 expressionParser、expressionEvaluator 与 calculationPolicy，
+        // 自身被 Task 14 的 CalculatorController 注入），漏装任何一个都会让上下文**启动失败**。
+        // hasSize(1) 额外约束的则是「恰好一个」。
         for (Class<?> type : List.of(Numbers.class, FunctionRegistry.class, ExpressionParser.class,
                 ExpressionEvaluator.class, CalculationPolicy.class, CalculationUseCase.class)) {
             assertThat(context.getBeanNamesForType(type))

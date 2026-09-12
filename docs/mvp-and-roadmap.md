@@ -41,7 +41,7 @@
 - **保留**：`Calculation` 结果记录本身 —— 它是**求值路径的产出**（`CalculationUseCase.calculate` 的返回类型、`CalculateResponse.from` 的入参），不是历史路径的一部分。但字段裁到三个：`(ExpressionText expression, CalcNumber result, AngleUnit angleUnit)`；原设计的 `id` / `elapsedMs` / `createdAt` 一并去掉，因为 MVP 里没有消费者，而 `id` 本应由历史聚合根分配 —— 在没有历史的情况下没有任何正确值可填。Phase 2 建聚合根时加回这三个字段。
 - **理由**：历史是「求值」之后的记录能力，不影响单次计算是否正确。它引入容量策略、并发与分页这些与计算无关的复杂度。
 - **Phase 2 需要补**：聚合根（内存 `ArrayDeque` + 读写锁 + FIFO 淘汰）、`HistoryUseCase`、分页响应 DTO、历史控制器。
-- **对 MVP 的影响**：每次求值不落库、不留痕；spec §14 验收里依赖历史记录条数的那几条，顺延为 Phase 2 验收（见第四节）。
+- **对 MVP 的影响**：每次求值不落库、不留痕；验收里依赖历史记录的条目（历史条数与分页、清空历史，spec §7.3）顺延为 Phase 2 验收（见第四节）。
 
 ### 3. 能力清单接口（`GET /api/v1/calculator/functions`）
 - **不做**：算子表与函数注册表的对外清单接口。
@@ -91,7 +91,7 @@
 4. 除零、语法错误、非法字符、非有限结果分别返回对应的错误码与 HTTP 状态，响应体为统一错误结构。
 5. 表达式长度超限被拒。
 
-**顺延到 Phase 2 的验收项**（原 spec §14 中依赖变量与历史的条目）：变量定义后参与计算、变量覆盖语义、保留名冲突被拒、历史记录条数与分页、清空历史、能力清单内容与顺序。
+**顺延到 Phase 2 的验收项**（原 spec 中依赖变量与历史的条目：§14 第 5、6 条是保留名与能力清单，§7.3 是历史、§7.4 是变量）：变量定义后参与计算、变量覆盖语义、保留名冲突被拒、历史记录条数与分页、清空历史、能力清单内容与顺序。
 
 ## 五、已知取舍与风险
 
@@ -99,7 +99,8 @@
 |---|---|---|
 | 无变量 | 表达式只能算常量表达式，不能存中间结果 | Phase 2 第一优先，因为它影响接口形态 |
 | 无历史 | 服务无状态、不可回溯 | Phase 2，与变量并列 |
-| 错误码词汇表比 MVP 实际用到的多 | 有几个码（`UNKNOWN_VARIABLE`、`VARIABLE_NOT_FOUND`、`HISTORY_NOT_FOUND`）在 MVP 中不会被触发 | Phase 2 补上对应能力后自然消化；词汇表保持完整是刻意的，避免 Phase 2 改动接口契约 |
+| 错误码词汇表比 MVP 实际用到的多 | 有两个码（`VARIABLE_NOT_FOUND`、`HISTORY_NOT_FOUND`）在 MVP 中不会被触发 —— 注意 `UNKNOWN_VARIABLE`（未定义变量）**会被**触发：`y+1` 即得 422 `UNKNOWN_VARIABLE` | Phase 2 补上对应能力后自然消化；词汇表保持完整是刻意的，避免 Phase 2 改动接口契约 |
 | 请求级变量保留，但**没有命名校验** | `POST /api/v1/calculator/calculate` 仍接受请求体的 `variables` 映射（spec §7.1 的请求形态不变），但没有变量存储、也没有保留名校验 —— 请求里传 `{"pi": 3}` 这类与常量名冲突的键，会覆盖内建含义，而不是像完整设计那样被拒。**已在代码中核实**：`ExpressionEvaluator` 的查找顺序是先 `context.lookup(name)`、查不到才找内建常量，所以 `sin(pi)` 在传了 `{"pi": 3}` 时确实算成 `sin(3)` | Phase 2 补变量能力时一并收紧（`VariableName` + `ReservedNames` 校验，D13 的单一收口点）；在此之前这是「能用但不设防」的已知缺口。注：MVP 里没有变量存储，也就没有第二个入口，spec 担心的「同一表达式在不同入口下含义不一致」在本期并不存在 —— 遮蔽只可能由调用方在同一请求里显式传入造成 |
 | 评审深度低于原计划 | 变量/历史两块的缺陷要到 Phase 2 才暴露 | Phase 2 动工前先补一次评审 |
 | 内存实现无持久化 | 重启即丢 | 若需求变成「多实例/持久化」，需要重新做架构决策（当前明确不引入存储） |
+| 静态资源映射被显式关闭（`spring.web.resources.add-mappings: false`） | 未匹配路径才会走 `NoHandlerFoundException` → 统一 404 + `NO_HANDLER`；**这是唯一的承重配置** —— `spring.mvc.throw-exception-if-no-handler-found` 自 Boot 3.2 起已废弃且实测无效，**不要加** | 升级 Spring Boot 时**必须重测 404 路径**：`CalculatorEndToEndTest.unknownPathReturns404WithNoHandlerCode` 变红即为信号 |
