@@ -90,9 +90,11 @@ class CapabilityQueryTest {
 
     @Test
     void limitsMatchTheConfiguredPolicyAndTheDomainBounds() {
-        CalculationPolicy policy = new CalculationPolicy(AngleUnit.DEGREE, 1000, 34);
-        CapabilityQuery query = new CapabilityQuery(policy);
-        assertThat(query.describe(List.of()).limits()).isEqualTo(new Limits(
+        // 刻意用一组与线上配置不同的值：若 CapabilityQuery 不读 policy 而是写死，
+        // 这条断言必须变红。用线上同款 1000/34 则与断言值同源，关不上缺口。
+        CalculationPolicy policy = new CalculationPolicy(AngleUnit.RADIAN, 500, 11);
+        CapabilityQuery policyQuery = new CapabilityQuery(policy);
+        assertThat(policyQuery.describe(List.of()).limits()).isEqualTo(new Limits(
                 policy.maxExpressionLength(), policy.divisionPrecision(),
                 Numbers.MAX_EXACT_DIGITS, DecimalNumber.MAX_SCALE_MAGNITUDE));
     }

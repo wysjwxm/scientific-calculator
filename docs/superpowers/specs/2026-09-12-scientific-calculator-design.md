@@ -310,6 +310,9 @@ args       → expression (',' expression)*
 入口校验来保证这一点 —— 领域层自己定义语义，入口拒收是另一道把关（见 §12 D4）。
 
 **这条规则由类型系统落实，而非由调用纪律落实**（见 §4.0）：禁用集合是值对象 `ReservedNames`，用户变量名必须构造为 `VariableName` 才能进入任何 API，而 `VariableName` 的构造器**本身就拒绝保留名**。存储写入与请求级变量两条入口，最终都只能拿到 `Map<VariableName, CalcNumber>`。因此不存在"某个入口忘了校验"的可能——校验不在入口处，在类型里。
+本条是**目标设计**；Phase 1（MVP）尚未引入 `VariableName`，该项校验暂落在应用层的
+`CalculationCommand` 紧凑构造器内（见 `CalculationCommand` 的 javadoc 与 docs/mvp-and-roadmap.md 的已知取舍表）。
+Phase 2 引入变量存储时按 D13 收口到值对象，届时本段才转为对现状的描述。
 
 ### 6.5 函数集
 
