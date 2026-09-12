@@ -53,9 +53,19 @@ public final class Numbers {
         return new DecimalNumber(v);
     }
 
+    /**
+     * 由 double 构造**算出来的**浮点数（函数结果）。与其余算术结果一样经过 15 位规整，
+     * 否则同一个值过不过一个算子会给出不同的数（sin(30°) 直连是 0.49999999999999994，
+     * 而 sin(30°)*1 是 0.5）。
+     *
+     * <p>规整的边界是「算出来的数」与「写进来的数」之间：字面量走
+     * {@link #of(java.math.BigDecimal)}，内置常量由 {@code MathematicalConstant}
+     * 直接构造 {@code FloatingNumber}，两者都不经过这里 —— π 的全精度 double 比它的
+     * 15 位规整值**更接近真值**，规整没有意义；而 sin(30°) 的原始值是弧度换算产生的
+     * 误差伪影，规整到 0.5 才符合数学真值。
+     */
     public CalcNumber floating(double v) {
-        requireFinite(v, "浮点值");
-        return new FloatingNumber(v);
+        return floatingFinite(v, "浮点值");
     }
 
     public CalcNumber add(CalcNumber a, CalcNumber b) {

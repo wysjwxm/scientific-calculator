@@ -38,6 +38,20 @@ class ReservedNamesTest {
     }
 
     @Test
+    void valuesPreserveTheDeclaredOrder() {
+        // 同 MathematicalConstant.names()：顺序是契约。values() 会喂给能力清单，
+        // 因此必须是一元函数 → 二元函数 → 常量 的稳定顺序，不能随散列布局漂移。
+        // hasSize 与 containsExactlyInAnyOrder 都不看顺序，抓不住 Set.copyOf 这类改动。
+        assertThat(ReservedNames.standard().values()).containsExactly(
+                "sin", "cos", "tan", "asin", "acos", "atan",
+                "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+                "sqrt", "cbrt", "abs", "exp", "ln", "log10", "log2",
+                "floor", "ceil", "round", "sign",
+                "hypot", "max", "min", "atan2", "log",
+                "pi", "e");
+    }
+
+    @Test
     void standardIsAStableSingleton() {
         assertThat(ReservedNames.standard()).isSameAs(ReservedNames.standard());
     }

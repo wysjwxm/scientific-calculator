@@ -23,6 +23,13 @@ class FunctionRegistryTest {
         return registry.find(name).orElseThrow().apply(values, unit, numbers);
     }
 
+    /** 值级断言：函数在指定角度制下的返回值。
+     *  函数结果要经过 15 位规整（见 Numbers.floating），所以一律用容差比较而非精确相等。 */
+    private void assertValue(String name, AngleUnit unit, double expected, double... args) {
+        assertThat(apply(name, unit, args).toDouble())
+                .isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-12));
+    }
+
     @Test
     void registersExactlyTwentyThreeUnaryAndFiveBinary() {
         assertThat(registry.unaryNames()).hasSize(23);
@@ -78,6 +85,43 @@ class FunctionRegistryTest {
                 .isCloseTo(45.0, org.assertj.core.data.Offset.offset(1e-9));
     }
 
+    @Test
+    void inverseTrigonometryIsAngleSensitiveForAcosAndAtanToo() {
+        // isInverseTrigonometric() 硬编码了 ASIN || ACOS || ATAN 三个常量，而此前
+        // 只有 asin 有值断言 —— 缩成 `this == ASIN` 不会有任何测试变红，角度制下
+        // acos(0.5) 会退回弧度值 1.5620695697691096、atan(1) 会退回 0.017451520651465824。
+        // 三个函数各自钉住两制下的值，缩小那个 || 就会立刻变红。
+        assertValue("asin", AngleUnit.DEGREE, 30.0, 0.5);
+        assertValue("acos", AngleUnit.DEGREE, 60.0, 0.5);
+        assertValue("atan", AngleUnit.DEGREE, 45.0, 1);
+        assertValue("asin", AngleUnit.RADIAN, Math.asin(0.5), 0.5);
+        assertValue("acos", AngleUnit.RADIAN, Math.acos(0.5), 0.5);
+        assertValue("atan", AngleUnit.RADIAN, Math.PI / 4, 1);
+    }
+
+    @Test
+    void hyperbolicFunctionsIgnoreAngleUnitAtNonZeroInput() {
+        // 原断言全部取 x = 0，而 0 是 Math.toRadians / Math.toDegrees 的不动点 ——
+        // 无论实现是否误把双曲函数当角度换算，x = 0 的断言都会通过。
+        // 换到 x = 1 并把两种角度制都钉在同一个期望值上：只要有一制做了角度换算，
+        // 结果就不再等于该字面量，测试必红。
+        assertValue("sinh", AngleUnit.DEGREE, 1.1752011936438014, 1);
+        assertValue("sinh", AngleUnit.RADIAN, 1.1752011936438014, 1);
+        assertValue("cosh", AngleUnit.DEGREE, 1.543080634815244, 1);
+        assertValue("cosh", AngleUnit.RADIAN, 1.543080634815244, 1);
+        assertValue("tanh", AngleUnit.DEGREE, 0.7615941559557649, 1);
+        assertValue("tanh", AngleUnit.RADIAN, 0.7615941559557649, 1);
+        assertValue("asinh", AngleUnit.DEGREE, 0.881373587019543, 1);
+        assertValue("asinh", AngleUnit.RADIAN, 0.881373587019543, 1);
+    }
+
+    @Test
+    void atan2PinsArgumentOrderWithAsymmetricInputs() {
+        // 唯一的既有断言用的是 atan2(1, 1) —— 对称入参，把 applyAsDouble(y, x) 写成
+        // (x, y) 结果完全相同。用非对称入参：y/x 顺序写反会得到 63.43494882292201。
+        assertValue("atan2", AngleUnit.DEGREE, 26.56505117707799, 1, 2);
+    }
+
     // ---------- 各函数 ----------
 
     @Test
@@ -108,6 +152,43 @@ class FunctionRegistryTest {
         assertThat(apply("tanh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(0.0);
         assertThat(apply("asinh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(0.0);
         assertThat(apply("cosh", AngleUnit.RADIAN, 0).toDouble()).isEqualTo(1.0);
+    }
+
+    @Test
+    void tanAndAtanHaveValueLevelAssertions() {
+        // tan 与 atan 此前没有任何值正确性断言：把 TAN 换成 Math::tanh、
+        // ATAN 换成 Math::tan 之后整套测试仍然全绿。这里各自钉一个典型值。
+        assertValue("tan", AngleUnit.DEGREE, 1.0, 45);
+        assertValue("atan", AngleUnit.RADIAN, Math.PI / 4, 1);
+    }
+
+    @Test
+    void normalizedFunctionResultsLandExactlyOnThePromisedValues() {
+        // 这一组是 MVP 对外承诺的精确值（不是「接近」）：函数结果直连
+        // Numbers.floating，而 floating 负责把 15 位之后的误差伪影规整掉。
+        // 刻意用 isEqualTo —— 规整后这些值恰好落在规范 double 上。
+        assertThat(apply("sin", AngleUnit.DEGREE, 30).toDouble()).isEqualTo(0.5);
+        assertThat(apply("cos", AngleUnit.DEGREE, 60).toDouble()).isEqualTo(0.5);
+        assertThat(apply("tan", AngleUnit.DEGREE, 45).toDouble()).isEqualTo(1.0);
+        assertThat(apply("asin", AngleUnit.DEGREE, 0.5).toDouble()).isEqualTo(30.0);
+        assertThat(apply("acos", AngleUnit.DEGREE, 0.5).toDouble()).isEqualTo(60.0);
+    }
+
+    @Test
+    void asinhAcceptsInputsUpToItsDeclaredMagnitudeBound() {
+        // spec §5.3.1 为反双曲函数声明的自变量上界是 |x| <= sqrt(Double.MAX_VALUE) ≈ 1.34e154；
+        // 1e154 在范围内，必须给出正确值。
+        assertValue("asinh", AngleUnit.RADIAN, 355.291251501643, 1e154);
+    }
+
+    @Test
+    void asinhRejectsInputsBeyondItsDeclaredMagnitudeBound() {
+        // 实现里 x * x 会先溢出成 Infinity，所以上界是**有意公开**的行为而非公式错
+        // （spec §5.3.3：拒收优于伪装）。超出上界即拒收，且错误码是 NON_FINITE_RESULT。
+        assertThatThrownBy(() -> apply("asinh", AngleUnit.RADIAN, 1e155))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
     }
 
     // ---------- 定义域 ----------
@@ -164,6 +245,23 @@ class FunctionRegistryTest {
                 .isCloseTo(0.5493061443340549, org.assertj.core.data.Offset.offset(1e-12));
     }
 
+    @Test
+    void roundRejectsMagnitudesBeyondLongRange() {
+        // round 的返回语义绑定在 64 位整数上：|x| >= 2^63 时 Math.round 饱和到
+        // Long.MAX_VALUE，静默给出 9.223372036854776E18 这种「看起来像答案」的错值。
+        // 定义域约束 Domain.LONG_RANGE 把它挡在求值之前。
+        assertDomainError("round", 1e30);
+        assertDomainError("round", -1e30);
+    }
+
+    @Test
+    void roundBehaviourInsideLongRangeIsUnchanged() {
+        // 边界是 9.223372036854776E18（2^63），1e18 远在范围内；负半轴同样是
+        // 「加 0.5 后向下取整」的既有语义（round(-2.5) = -2）。
+        assertValue("round", AngleUnit.RADIAN, 1e18, 1e18);
+        assertThat(apply("round", AngleUnit.RADIAN, -2.5).toDouble()).isEqualTo(-2.0);
+    }
+
     // ---------- 元数 ----------
 
     @Test
@@ -191,5 +289,21 @@ class FunctionRegistryTest {
         assertThat(registry.find("sqrt").orElseThrow().angleSensitive()).isFalse();
         assertThat(registry.find("log").orElseThrow().angleSensitive()).isFalse();
         assertThat(registry.find("sinh").orElseThrow().angleSensitive()).isFalse();
+    }
+
+    @Test
+    void angleSensitiveFunctionsAreExactlyTheTrigonometrySet() {
+        // 「哪些函数受角度制影响」这件事被表达在三处：枚举的 angleSensitive 标志、
+        // UnaryFunction.isInverseTrigonometric() 手写的三个常量、BinaryFunction 里
+        // 直接写的 this == ATAN2。三者今天一致，但漏改任何一处都没有信号。
+        // 这条断言按标志过滤出精确集合，把三者共同的可观测面钉死。
+        assertThat(UnaryFunction.values())
+                .filteredOn(UnaryFunction::angleSensitive)
+                .extracting(UnaryFunction::functionName)
+                .containsExactlyInAnyOrder("sin", "cos", "tan", "asin", "acos", "atan");
+        assertThat(BinaryFunction.values())
+                .filteredOn(BinaryFunction::angleSensitive)
+                .extracting(BinaryFunction::functionName)
+                .containsExactlyInAnyOrder("atan2");
     }
 }

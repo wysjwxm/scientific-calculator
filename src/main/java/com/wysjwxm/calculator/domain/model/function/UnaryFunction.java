@@ -52,7 +52,7 @@ public enum UnaryFunction implements MathFunction {
     // 取整与符号
     FLOOR("floor", false, Domain.ANY, Math::floor),
     CEIL("ceil", false, Domain.ANY, Math::ceil),
-    ROUND("round", false, Domain.ANY, x -> (double) Math.round(x)),
+    ROUND("round", false, Domain.LONG_RANGE, x -> (double) Math.round(x)),
     SIGN("sign", false, Domain.ANY, Math::signum);
 
     /** 对函数参数 x 的定义域约束。 */
@@ -62,7 +62,8 @@ public enum UnaryFunction implements MathFunction {
         POSITIVE,
         UNIT_INTERVAL,        // asin / acos： -1 <= x <= 1
         AT_LEAST_ONE,         // acosh：      x >= 1
-        OPEN_UNIT_INTERVAL    // atanh：      -1 < x < 1
+        OPEN_UNIT_INTERVAL,   // atanh：      -1 < x < 1
+        LONG_RANGE            // round：      |x| < 2^63，超出则 Math.round 会饱和到 Long.MAX_VALUE
     }
 
     private final String functionName;
@@ -128,6 +129,7 @@ public enum UnaryFunction implements MathFunction {
             case UNIT_INTERVAL -> x >= -1 && x <= 1;
             case AT_LEAST_ONE -> x >= 1;
             case OPEN_UNIT_INTERVAL -> x > -1 && x < 1;
+            case LONG_RANGE -> Math.abs(x) < 9.223372036854776E18;
         };
         if (!ok) {
             throw CalcException.of(CalcErrorCode.DOMAIN_ERROR,

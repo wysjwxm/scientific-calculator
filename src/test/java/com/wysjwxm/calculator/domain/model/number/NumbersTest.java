@@ -74,11 +74,12 @@ class NumbersTest {
 
     @Test
     void computedFloatingResultsAreNormalized() {
-        // sin(30°) 的原始 double 是 0.49999999999999994；经过规整应为 0.5
+        // sin(30°) 的原始 double 是 0.49999999999999994；工厂负责把它规整成 0.5。
+        // 这里刻意直连 floating()，不再经由 multiply —— 真实求值路径上 sin(30) 的
+        // 结果也不会经过任何算术算子，所以拐道乘法会让这条测试测不到产品路径。
         double raw = Math.sin(Math.toRadians(30));
         assertThat(raw).isNotEqualTo(0.5);
-        assertThat(numbers.multiply(numbers.floating(raw), numbers.of(1L)).toDouble())
-                .isEqualTo(0.5);
+        assertThat(numbers.floating(raw).toDouble()).isEqualTo(0.5);
     }
 
     @Test
@@ -197,7 +198,9 @@ class NumbersTest {
 
     @Test
     void normalizationDoesNotFalselyRejectTopOfDoubleRange() {
-        // 规整的进位会把 Double.MAX_VALUE 推成 Infinity；此时必须保留原值
+        // 规整的进位会把 Double.MAX_VALUE 推成 Infinity；此时必须保留原值。
+        // 直连 factory 也要成立 —— 函数结果走的就是这条路，不经过任何算术算子。
+        assertThat(numbers.floating(Double.MAX_VALUE).toDouble()).isEqualTo(Double.MAX_VALUE);
         assertThat(numbers.multiply(numbers.floating(Double.MAX_VALUE), numbers.of(1L)).toDouble())
                 .isEqualTo(Double.MAX_VALUE);
     }
