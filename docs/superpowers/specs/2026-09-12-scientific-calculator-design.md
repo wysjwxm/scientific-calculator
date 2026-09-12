@@ -98,8 +98,8 @@ com.wysjwxm.calculator
 | 组件 | 职责 | 依赖 |
 |---|---|---|
 | `Lexer` | 字符串 → Token 流，携带位置信息 | 无 |
-| `ExpressionParser` | Token 流 → AST（递归下降） | Lexer 产物 |
-| `OperatorTable` | 算子的优先级与结合性定义，**仅解析器内部使用**，无对应 HTTP 接口 | 无 |
+| `ExpressionParser` | Token 流 → AST（**优先级爬升**式递归下降，由 `OperatorTable` 驱动） | Lexer 产物、`OperatorTable` |
+| `OperatorTable` | 算子优先级与结合性的**唯一事实来源**。解析器与 `/functions` 清单均由此生成，无对应 HTTP 接口 | 无 |
 | `Evaluator` | AST → `CalcNumber`，配合 `EvaluationContext` 解析变量 | AST、注册表 |
 | `FunctionRegistry` | 函数名 → 函数实现的查表 | `MathFunction` 实现 |
 | `CalculationService` | 编排：解析 → 求值 → 落历史；角度单位处理；保留名校验 | core、store |
@@ -169,6 +169,10 @@ primary    → NUMBER
            | '(' expression ')'
 args       → expression (',' expression)*
 ```
+
+> **实现策略**：上表是**语言规范**，实现采用**优先级爬升（precedence climbing）**的递归下降解析器，由 `OperatorTable` 驱动，而非把优先级硬编码成嵌套方法。
+>
+> 原因：硬编码会在语法里写一遍优先级、在 `/functions` 清单里再写一遍，两处必然漂移——更糟的是 `OperatorTableTest` 会通过（清单与表一致），而表与解析器实际行为不一致，防漂移测试形同虚设。由算子表统一驱动后，`precedence`/`associativity` 只有一处定义，清单与解析器读的是同一份数据。
 
 ### 6.3 优先级与结合性（均以测试固定）
 
