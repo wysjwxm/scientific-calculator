@@ -4,6 +4,10 @@ spring:
   web:
     # 关掉静态资源映射，使未匹配的请求走 NoHandlerFoundException 而非资源处理器，
     # 从而由全局异常处理器统一返回 404（spec §7.6）。
+    # 实测：这一行是唯一的杠杆 —— 去掉它，未匹配路径会被资源处理器接走并抛
+    # NoResourceFoundException，而它没有对应的 @ExceptionHandler，最终由兜底分支
+    # 返回 500。另：spring.mvc.throw-exception-if-no-handler-found 自 Boot 3.2 起已
+    # 废弃待删，实测设为 false 亦无影响，不要再加这个键。
     resources:
       add-mappings: false
 

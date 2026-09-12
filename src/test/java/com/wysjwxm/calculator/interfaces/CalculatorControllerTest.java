@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -191,6 +192,16 @@ class CalculatorControllerTest {
         calculate("{not json")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void wrongMethodOnExistingPathReturns405() throws Exception {
+        // GET 打到只接受 POST 的路径：RequestMappingHandlerMapping 抛
+        // HttpRequestMethodNotSupportedException，由 GlobalExceptionHandler 统一成
+        // 405 + METHOD_NOT_ALLOWED。这条与 handler 里那个分支一一对应。
+        mockMvc.perform(get("/api/v1/calculator/calculate"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"));
     }
 
     @Test

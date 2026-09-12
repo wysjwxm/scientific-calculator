@@ -131,6 +131,17 @@ class CalculatorEndToEndTest {
     }
 
     @Test
+    void unknownPathReturns404WithNoHandlerCode() {
+        // 未注册的路径必须是统一的 404 + NO_HANDLER（spec §7.6），
+        // 而不是 Boot 默认错误结构、更不是 500 —— 这条钉住 GlobalExceptionHandler
+        // 与真实栈路由的接合点（本类的其它用例都打已注册路径，碰不到这里）。
+        ResponseEntity<String> missing = rest.getForEntity(url("/api/v1/nope"), String.class);
+
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(missing.getBody()).contains("NO_HANDLER");
+    }
+
+    @Test
     void overlongExpressionReturns400() {
         // 1001 字符，超出 calculator.max-expression-length（1000）
         String expression = "1" + "+1".repeat(500);

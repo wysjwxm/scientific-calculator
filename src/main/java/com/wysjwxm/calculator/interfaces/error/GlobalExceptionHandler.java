@@ -21,6 +21,9 @@ import java.time.Instant;
  * <p>不依赖 Spring 默认错误页 —— application.yaml 关闭了 whitelabel，并用
  * {@code spring.web.resources.add-mappings: false} 关掉静态资源映射，使未匹配的请求
  * 走 {@link NoHandlerFoundException} 而不是资源处理器，从而能被这里统一处理。
+ * 这一环已实测（内嵌 Tomcat + 真实 HTTP 栈）：删掉那行配置，未匹配路径会由资源处理器
+ * 抛出 {@code NoResourceFoundException}，本类没有它的分支，请求最终落到下面的兜底分支
+ * 变成 500 —— 那行配置是承重的，不是装饰。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
