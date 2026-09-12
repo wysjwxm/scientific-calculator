@@ -2,6 +2,8 @@ package com.wysjwxm.calculator.domain.model.function;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Spliterator;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ReservedNamesTest {
@@ -49,6 +51,11 @@ class ReservedNamesTest {
                 "floor", "ceil", "round", "sign",
                 "hypot", "max", "min", "atan2", "log",
                 "pi", "e");
+        // 两条断言是配对的，缺一不可（同款说明见 MathematicalConstantTest）：
+        // `containsExactly` 抓「顺序确定但排错」的变异（如换成 TreeSet —— 它**是** ORDERED，
+        // 却会排成字典序）；`ORDERED` 抓「顺序随机」的变异（如 Set.copyOf，可能碰巧排对）。
+        assertThat(ReservedNames.standard().values().spliterator()
+                .hasCharacteristics(Spliterator.ORDERED)).isTrue();
     }
 
     @Test

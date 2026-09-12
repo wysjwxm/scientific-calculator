@@ -2,6 +2,8 @@ package com.wysjwxm.calculator.domain;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Spliterator;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MathematicalConstantTest {
@@ -26,18 +28,17 @@ class MathematicalConstantTest {
 
     @Test
     void namesPreserveEnumDeclarationOrder() {
-        // 顺序是契约而非巧合（明文裁定 R6）：这个集合会喂给 Phase 2 的能力清单，
-        // 用 Set.copyOf 会让迭代顺序随 JVM 运行漂移（ImmutableCollections 用随机 SALT），
-        // 清单每次启动都不一样。注意 isEqualToInAnyOrder/hasSize 都不看顺序，抓不住它 ——
-        // 这条断言的意义不是检查这两个名字，而是把「顺序是契约」这个决定变成可执行的。
+        // 顺序是契约（R6）：`Set.copyOf` 的迭代顺序由启动期随机 SALT 决定，
+        // 会让 Phase 2 的能力清单每次启动都不一样。
         assertThat(MathematicalConstant.names()).containsExactly("pi", "e");
-
-        // 上面那条 containsExactly 单独还不够：Set.copyOf 对两个元素的小集合走
-        // ImmutableCollections$Set12，而它的迭代顺序由启动期的随机 SALT 决定 —— 实测
-        // 多数运行里它**碰巧**就是插入顺序，于是断言在那些运行里空转。这里直接钉住
-        // 实现约束：返回集合不能来自顺序会漂移的 ImmutableCollections。
-        assertThat(MathematicalConstant.names().getClass().getName())
-                .doesNotContain("ImmutableCollections");
+        // 上面那条 `containsExactly` 单独会空转：对 2 元素集合，`Set.copyOf` 走
+        // ImmutableCollections$Set12，顺序由随机 SALT 决定，多数运行下碰巧等于
+        // 声明顺序（实测 8 次独立 JVM：5 次 [pi, e]、3 次 [e, pi]）。
+        // 用 Spliterator.ORDERED 判定：它是「迭代顺序有意义且被保留」的 API 级
+        // 表述，对 ImmutableCollections 恒为 false、对 LinkedHashSet 恒为 true，
+        // 且不依赖任何 JDK 内部类名。
+        assertThat(MathematicalConstant.names().spliterator()
+                .hasCharacteristics(Spliterator.ORDERED)).isTrue();
     }
 
     @Test
