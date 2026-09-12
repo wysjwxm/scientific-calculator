@@ -144,11 +144,16 @@ public final class Numbers {
             throw CalcException.of(CalcErrorCode.DOMAIN_ERROR,
                     "阶乘只接受非负整数，实际为 " + n.toPlainString());
         }
-        int value = n.intValueExact();
-        if (value > FACTORIAL_LIMIT) {
+        // 先比量级再转 int：intValueExact 对超出 int 的数值直接抛 ArithmeticException，
+        // 会绕过下面的上界判断、一路逃成 500（1E+10! 即可触发）。
+        // 必须用 BigDecimal 比较 —— 1E+10 的 precision 是 1 看起来很小，但 intValueExact
+        // 看的是**数值**（100 亿），不是位数。
+        if (n.compareTo(BigDecimal.valueOf(FACTORIAL_LIMIT)) > 0) {
+            // 用 toString 而非 toPlainString：后者会把负 scale 展开成完整数字串
             throw CalcException.of(CalcErrorCode.NON_FINITE_RESULT,
-                    "阶乘上界为 " + FACTORIAL_LIMIT + "，实际为 " + value);
+                    "阶乘上界为 " + FACTORIAL_LIMIT + "，实际为 " + n.toString());
         }
+        int value = n.intValueExact();
         BigDecimal result = BigDecimal.ONE;
         for (int i = 2; i <= value; i++) {
             result = result.multiply(BigDecimal.valueOf(i));

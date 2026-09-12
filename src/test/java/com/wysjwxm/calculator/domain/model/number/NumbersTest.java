@@ -145,6 +145,43 @@ class NumbersTest {
     }
 
     @Test
+    void factorialRejectsMagnitudesBeyondIntBeforeConverting() {
+        // 1E+10 是非负整数、字面量也合法，但远超 int：必须先比量级再转 int，
+        // 否则 intValueExact 抛 ArithmeticException 逃成 500（原实现即如此）。
+        assertThatThrownBy(() -> numbers.factorial(numbers.of(new BigDecimal("1E+10"))))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+        // Integer.MAX_VALUE + 1：相邻两个量级都要落在同一个上界判断里被拒
+        assertThatThrownBy(() -> numbers.factorial(numbers.of(new BigDecimal("2147483648"))))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void decimalNumberRejectsScalesBeyondTheRepresentableBound() {
+        // scale 决定「对齐两个数要构造多少位的大整数」。BigDecimal 允许 ±21 亿，
+        // 但 1E+2147483647 + 1 会抛 ArithmeticException 逃成 500 —— 在值对象处拦住。
+        assertThatThrownBy(() -> numbers.of(new BigDecimal("1E+2147483647")))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+        assertThatThrownBy(() -> new DecimalNumber(new BigDecimal("1E-2147483647")))
+                .isInstanceOf(CalcException.class)
+                .extracting(e -> ((CalcException) e).code())
+                .isEqualTo(CalcErrorCode.NON_FINITE_RESULT);
+    }
+
+    @Test
+    void decimalNumberKeepsScalesInsideTheBound() {
+        // 边界是闭区间：1E+100000 与 1E-100000 的 scale 恰好是 ∓100000，必须仍然可用。
+        // 若把 > 改成 >=，这两个断言即失败。
+        assertThat(numbers.of(new BigDecimal("1E+100000")).toDecimal().scale()).isEqualTo(-100_000);
+        assertThat(numbers.of(new BigDecimal("1E-100000")).toDecimal().scale()).isEqualTo(100_000);
+    }
+
+    @Test
     void floatingNumberRejectsNonFiniteDirectly() {
         // 绕过 Numbers 工厂直接构造也必须被拒：否则 divide/modulo/factorial 会抛
         // NumberFormatException，变成 500 INTERNAL_ERROR
