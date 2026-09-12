@@ -1,0 +1,966 @@
+# ============================================================================
+# 科学计算器 —— 手工验收请求集
+#
+# 用法：启动服务（java -jar target/scientific-calculator-0.0.1-SNAPSHOT.jar）后，
+#       在 IDE 里逐块点 ▶ 执行，或整文件运行。
+# 基线：{{base}} = http://localhost:8080（端口取自 application.yaml:15；
+#       注意该端口没有任何测试使用 —— HTTP 测试走随机端口，所以 8080 属生产配置）
+#
+# 【预期标注口径】—— 三档，别混着读：
+#   [钉住]      HTTP 层测试断言过（CalculatorEndToEndTest / CalculatorControllerTest）
+#   [领域层钉]  领域层或应用层测试断言过；**HTTP 层的序列化形态没有钉住**
+#   [待观察]    无任何断言覆盖。第一次执行以实测为准，不要拿它判对错
+#
+# 为什么大多数函数只有 [领域层钉]：HTTP 层只钉了 sin(30)=0.5 一个函数值。
+# 其余函数的值断言都在领域层 —— 以 FunctionRegistryTest 为主，个别在 EvalTest / PrecisionTest；
+# 而 acosh 的合法入参值**从未被任何测试断言过**（见 5.12，那里标的是 [待观察]）。
+#
+# 错误响应统一为 {code, message, position, timestamp, path}；
+#   position 只在语法类错误里出现（@JsonInclude(NON_NULL)），其余情况**键不存在**。
+# ============================================================================
+
+@base = http://localhost:8080
+
+
+# ----------------------------------------------------------------------------
+# 0. 健康检查
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，响应体含 "status":"UP"；uptimeMs 是数字
+### 0.1 健康检查
+GET {{base}}/health
+
+
+# 预期 [钉住·同机制] 404 + NO_HANDLER（统一错误结构；whitelabel 已关，不会是 HTML 错误页）
+#   被钉住的具体路径是 GET /api/v1/nope（见 10.1）；本条是同一机制的另一条路径，未单独断言
+### 0.2 健康检查带错前缀（验证 404 的统一形态）
+GET {{base}}/api/v1/calculator/health
+
+
+# ----------------------------------------------------------------------------
+# 1. 验收标准（spec §14 中本 MVP 可执行的部分 + docs/mvp-and-roadmap.md §四）
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，"result":1.5，angleUnit 为 "DEGREE"（未传 angleUnit → 取缺省）
+# 这是 spec §14 第 3 条验收项，也是整个验收的核心一条
+### 1.1 【验收】1 + 2 * sin(30) ^ 2  →  1.5
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1 + 2 * sin(30) ^ 2"}
+
+
+### 预期 [钉住] 200，"result":0.3（精确路径：不是 0.30000000000000004）
+### 1.2 【验收】0.1 + 0.2  →  0.3
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "0.1+0.2"}
+
+
+# 预期 [钉住] 200，"result":0.5
+### 1.3 角度制下的 sin(30)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)"}
+
+
+# ----------------------------------------------------------------------------
+# 2. 优先级与结合性三规则（README 语法速查的同一组例子）
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，"result":-4 —— 幂的优先级高于一元负号：-(2^2)，不是 (-2)^2
+### 2.1 -2^2  →  -4
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "-2^2"}
+
+
+# 预期 [钉住] 200，"result":512 —— 幂是右结合：2^(3^2)，不是 (2^3)^2
+### 2.2 2^3^2  →  512
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "2^3^2"}
+
+
+# 预期 [领域层钉] 200，"result":7（HTTP 层未钉此例）
+### 2.3 3!+1  →  7
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "3!+1"}
+
+
+# ----------------------------------------------------------------------------
+# 3. 四则、括号、取模、一元正号
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，"result":7，"resultType":"DECIMAL"
+# 响应体字段：{expression, result, resultType, angleUnit}
+### 3.1 1+2*3  →  7
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1+2*3"}
+
+
+# 预期 [领域层钉] 200，"result":9
+### 3.2 (1+2)*3  →  9
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "(1+2)*3"}
+
+
+# 预期 [领域层钉] 200，"result":1（% 是中缀取模；取模的除数为 0 见 8.26）
+### 3.3 7%3  →  1
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "7%3"}
+
+
+# 预期 [领域层钉] 200，"result":5（前缀一元 + 是合法算子）
+### 3.4 +5  →  5
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "+5"}
+
+
+# ----------------------------------------------------------------------------
+# 4. 两条数值路径（精确 BigDecimal / 浮点 double）与结果的线上形态
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，"result":0.3 —— 精确路径，不出现二进制浮点噪声
+### 4.1 精确路径：0.1 + 0.2
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "0.1+0.2"}
+
+
+# 预期 [领域层钉] 200，"result":0.333…（**34 位小数**，取自 calculator.division-precision=34；
+#                 HTTP 层未断言位数的线上形态）
+### 4.2 除法：1/3  →  34 位小数
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1/3"}
+
+
+# 预期 [钉住] 200，"result":100（**不是** 1E+2）—— 精确路径的整数结果写成普通十进制。
+#   问题已关闭：CalcNumberSerializer 走 toPlainString()，这里的线上形态被两条测试钉住 ——
+#   单元级 CalcNumberSerializerTest.integralExactResultsDoNotUseScientificNotation（断言 {"value":100}）
+#   与真实 HTTP 栈 CalculatorEndToEndTest.integralExactResultIsWrittenAsPlainDecimalOnTheRealStack
+#   （断言含 "result":100，且 doesNotContain("1E+2")）。
+### 4.3 整数结果的线上形态：2*50  →  100
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "2*50"}
+
+
+# 预期 [领域层钉] 200，"result":4.0（**不是** 4）—— 浮点路径走 writeNumber(double)，写出的是 double 的形态。
+#   值由领域层钉住：ExpressionEvaluatorTest.dispatchToFunctions 断言 num("sqrt(16)") == 4.0；
+#   线上形态由 CalcNumberSerializerTest.floatingPathIsWrittenAsDouble 直连序列化器钉住（{"value":4.0}）。
+#   HTTP 层没有为这一例写过断言 —— 所以是 [领域层钉]，不是 [钉住]。
+### 4.4 浮点路径的整数形态：sqrt(16)  →  4.0
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sqrt(16)"}
+
+
+# 预期 [领域层钉] 200，"resultType":"FLOATING"（该取值在 HTTP 层未被断言，只有 "DECIMAL" 被钉）
+### 4.5 浮点路径的 resultType 取值：sin(30)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)"}
+
+
+# ----------------------------------------------------------------------------
+# 5. 函数逐个（28 个：一元 23 + 二元 5）
+#    除 5.1 是 [钉住] 外，其余绝大多数是 [领域层钉]（HTTP 层没有为它们写过断言）；
+#    少数几条标 [待观察]，别混读
+# ----------------------------------------------------------------------------
+
+# ---- 三角函数（角度敏感；入参是角度，按 angleUnit 换算）----
+
+# 预期 [钉住] 200，"result":0.5
+### 5.1 sin(30)  角度制
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)"}
+
+# 预期 [领域层钉] 200，"result":0.5
+### 5.2 cos(60)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "cos(60)"}
+
+# 预期 [领域层钉] 200，"result":1.0
+### 5.3 tan(45)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "tan(45)"}
+
+# 预期 [待观察] tan(90)：**不会报错** —— 浮点里 π/2 不可精确表示，所以不存在「tan(90) 是无穷」
+#   这种判定，实际会得到一个很大的**有限值**（量级我不写死，以你实测为准）。
+#   这是数值近似的已知表现，不是缺陷。
+### 5.4 tan(90)  角度制的数值近似
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "tan(90)"}
+
+
+# ---- 反三角函数（入参是比值、不换算；**返回值**是角度，按 angleUnit 换算）----
+
+# 预期 [领域层钉] 200，"result":30.0
+### 5.5 asin(0.5)  角度制
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "asin(0.5)"}
+
+# 预期 [领域层钉] 200，"result":60.0
+### 5.6 acos(0.5)  角度制
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "acos(0.5)"}
+
+# 预期 [领域层钉] 200，"result":45.0
+### 5.7 atan(1)  角度制
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "atan(1)"}
+
+
+# ---- 双曲函数（角度无关，两制同值）----
+
+# 预期 [领域层钉] 200，"result":1.1752011936438014
+### 5.8 sinh(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sinh(1)"}
+
+# 预期 [领域层钉] 200，"result":1.543080634815244
+### 5.9 cosh(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "cosh(1)"}
+
+# 预期 [领域层钉] 200，"result":0.7615941559557649
+### 5.10 tanh(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "tanh(1)"}
+
+
+# ---- 反双曲函数（本实现自己按恒等式算 —— Java 17 的 Math 里没有它们）----
+
+# 预期 [领域层钉] 200，"result":0.881373587019543
+### 5.11 asinh(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "asinh(1)"}
+
+# 预期 [待观察] acosh(2)：**该函数的合法入参值从未被断言过**（只钉了 acosh(0.5) 属定义域错）
+#   参考值约 1.3169578969248166，但请以实测为准
+### 5.12 acosh(2)  值未被钉住
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "acosh(2)"}
+
+# 预期 [领域层钉] 200，"result":0.5493061443340549
+### 5.13 atanh(0.5)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "atanh(0.5)"}
+
+
+# ---- 幂与根 ----
+
+# 预期 [领域层钉] 200，"result":2.0
+### 5.14 sqrt(4)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sqrt(4)"}
+
+# 预期 [领域层钉] 200，"result":3.0
+### 5.15 cbrt(27)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "cbrt(27)"}
+
+
+# ---- 绝对值、指数与对数 ----
+
+# 预期 [领域层钉] 200，"result":3.0
+### 5.16 abs(-3)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "abs(-3)"}
+
+# 预期 [领域层钉] 200，"result":1.0
+### 5.17 exp(0)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "exp(0)"}
+
+# 预期 [领域层钉] 200，"result":0.0
+### 5.18 ln(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "ln(1)"}
+
+# 预期 [领域层钉] 200，"result":2.0（底数为 10）
+### 5.19 log10(100)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log10(100)"}
+
+# 预期 [领域层钉] 200，"result":3.0（底数为 2）
+### 5.20 log2(8)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log2(8)"}
+
+
+# ---- 取整与符号 ----
+
+# 预期 [领域层钉] 200，"result":2.0
+### 5.21 floor(2.7)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "floor(2.7)"}
+
+# 预期 [领域层钉] 200，"result":3.0
+### 5.22 ceil(2.1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "ceil(2.1)"}
+
+# 预期 [领域层钉] 200，"result":3.0（Math.round 的规则：2.5 进位）
+### 5.23 round(2.5)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "round(2.5)"}
+
+# 预期 [领域层钉] 200，"result":-2.0（**-2.5 向上取整到 -2**，与直觉的"远离零"不同）
+### 5.24 round(-2.5)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "round(-2.5)"}
+
+# 预期 [领域层钉] 200，"result":-1.0
+### 5.25 sign(-9)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sign(-9)"}
+
+
+# ---- 二元函数（只有无法用中缀算子表达的 5 个）----
+
+# 预期 [领域层钉] 200，"result":5.0
+### 5.26 hypot(3,4)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "hypot(3,4)"}
+
+# 预期 [领域层钉] 200，"result":4.0
+### 5.27 max(3,4)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "max(3,4)"}
+
+# 预期 [领域层钉] 200，"result":3.0
+### 5.28 min(3,4)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "min(3,4)"}
+
+# 预期 [领域层钉] 200，"result":45.0（**参数顺序是 atan2(y, x)**；返回值按 angleUnit 换算成度）
+### 5.29 atan2(1,1)  角度制
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "atan2(1,1)"}
+
+# 预期 [领域层钉] 200，"result":3.0（**参数顺序是 log(真数, 底数)**）
+### 5.30 log(8,2)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log(8,2)"}
+
+
+# ---- 内建常量（只有 pi 与 e 两个）----
+
+# 预期 [领域层钉] 200，pi 取 Math.PI。（该表达式**有**领域层断言 ——
+#   ExpressionEvaluatorTest.resolvesBuiltInConstants 断言 num("pi") 逼近 Math.PI；HTTP 层未钉此例）
+### 5.31 常量 pi
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "pi"}
+
+# 预期 [领域层钉] 200，e 取 Math.E。（该表达式**有**领域层断言 ——
+#   ExpressionEvaluatorTest.resolvesBuiltInConstants 断言 num("e") 逼近 Math.E；HTTP 层未钉此例）
+### 5.32 常量 e
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "e"}
+
+
+# ----------------------------------------------------------------------------
+# 6. 角度单位
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，$.angleUnit = "RADIAN"（数值本身未被钉住）
+### 6.1 显式指定 RADIAN
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)", "angleUnit": "RADIAN"}
+
+
+# 预期 [领域层钉] 200，"result":-0.988031624092862（30 弧度 ≈ 1718.87°，所以是负值）
+### 6.2 RADIAN 下 sin(30) 的取值
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)", "angleUnit": "RADIAN"}
+
+
+# 预期 [钉住] 200，angleUnit 字段**在场且为 null**（不是键缺失）—— 非三角表达式不涉及角度
+### 6.3 非三角表达式：angleUnit 为 null
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1+2"}
+
+
+# 预期 [待观察] 400 INVALID_REQUEST —— 枚举里没有 GRADIANS（只有 DEGREE / RADIAN）
+#   代码路径：Jackson 反序列化枚举失败 → HttpMessageNotReadableException → 400
+### 6.4 非法的 angleUnit 取值
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30)", "angleUnit": "GRADIANS"}
+
+
+# ----------------------------------------------------------------------------
+# 7. 请求级变量（本期没有变量存储，变量只在单次请求内可见）
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 200，"result":14
+### 7.1 变量参与计算：x*2 且 x=7
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "x*2", "variables": {"x": 7}}
+
+
+# 预期 [钉住] 400，code=INVALID_REQUEST（消息里含变量名；HTTP 层未断言消息文本）——
+#   请求级变量名落在**禁用集合**（函数名 ∪ 保留常量名）内即被拒，永远不会走到求值、更算不成 sin(3)。
+#   「覆盖内建含义」是**修正前**的行为，已不成立：spec :372 与 docs/mvp-and-roadmap.md:104
+#   现在都写明「键落在禁用集合内 → 400 INVALID_REQUEST」。
+#   实现在 CalculationCommand 的紧凑构造器（保留名校验），HTTP 层的断言见
+#   CalculatorControllerTest.rejectsVariableWhoseNameIsReserved（400 + INVALID_REQUEST，仅 MockMvc）。
+### 7.2 保留名被拒：sin(pi) 且 pi=3
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(pi)", "variables": {"pi": 3}}
+
+
+# 预期 [待观察] 200，值为 5.0（该表达式无断言；变量作为单值参与求值）
+### 7.3 变量单独成项：x 且 x=5
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "x", "variables": {"x": 5}}
+
+
+# ----------------------------------------------------------------------------
+# 8. 错误矩阵
+# ----------------------------------------------------------------------------
+
+# ---- 8.1–8.4 解析错误（400 PARSE_ERROR，position 给出出错位置）----
+#   8.1 是 [钉住]；8.2–8.4 只有领域层的位置断言 —— position 的线上值与领域层一致，
+#   但 HTTP 层没有为它们写过断言。
+
+# 预期 [钉住] 400，code=PARSE_ERROR，position=2，path=/api/v1/calculator/calculate
+### 8.1 缺操作数：1+
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1+"}
+
+
+# 预期 [钉住] 400，code=PARSE_ERROR（position 未被钉住）
+### 8.2 非法字符：1$2
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1$2"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=4
+### 8.3 多余的运算符：1 + * 2
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1 + * 2"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=4
+### 8.4 括号不匹配：(1+2
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "(1+2"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=5
+### 8.5 多余的右括号：(1+2))
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "(1+2))"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=6
+#   注意：spec §7.6 的样例写的是 position=7、消息里带"第 7 个字符处"；
+#   实现把位置放在独立字段、消息里不含位置，且该场景实测为 6。以实测为准。
+### 8.6 函数括号未闭合：sin(30
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sin(30"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=7
+### 8.7 二元函数缺参：max(1,2
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "max(1,2"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=6
+### 8.8 参数为空：max(1,)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "max(1,)"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=4
+### 8.9 非法字符：1 + @
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1 + @"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=1
+### 8.10 不完整的指数：1e+
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1e+"}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=0
+### 8.11 孤立的小数点：.
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "."}
+
+
+# 预期 [领域层钉] 400 PARSE_ERROR，position=0（指数超出 int 范围）
+### 8.12 巨大的指数：1E+2147483648
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1E+2147483648"}
+
+
+# ---- 8.13–8.15 未知函数 / 未知变量 ----
+
+# 预期 [钉住] 400，code=UNKNOWN_FUNCTION
+### 8.13 未注册的函数名：nope(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "nope(1)"}
+
+
+# 预期 [待观察] 400 UNKNOWN_FUNCTION（pow / mod / fact 都没注册 —— 幂与取模用 ^ 和 %）
+### 8.14 幂不叫 pow：pow(2,3)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "pow(2,3)"}
+
+
+# 预期 [钉住] 422，code=UNKNOWN_VARIABLE
+### 8.15 未定义的变量：y+1
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "y+1"}
+
+
+# ---- 8.16–8.24 定义域错误（422 DOMAIN_ERROR）----
+#   只有 8.16 在 HTTP 层被钉住；其余输入的错误码都在领域层被钉住。
+
+# 预期 [钉住] 422，code=DOMAIN_ERROR
+### 8.16 sqrt 的定义域：sqrt(-1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "sqrt(-1)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（asin 要求 -1 ≤ x ≤ 1）
+### 8.17 asin(2)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "asin(2)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR
+### 8.18 acos(-2)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "acos(-2)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（acosh 要求 x ≥ 1）
+### 8.19 acosh(0.5)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "acosh(0.5)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（atanh 要求 -1 < x < 1，**开区间**：端点 1 不合法）
+### 8.20 atanh(1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "atanh(1)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（ln 要求 x > 0）
+### 8.21 ln(0)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "ln(0)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR
+### 8.22 log10(0)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log10(0)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（底数不能为 1）
+### 8.23 log 的底数非法：log(8,1)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log(8,1)"}
+
+
+# 预期 [领域层钉] 422 DOMAIN_ERROR（真数必须为正）
+### 8.24 log 的真数非法：log(-1,2)
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "log(-1,2)"}
+
+
+# ---- 8.25–8.28 除零 ----
+
+# 预期 [钉住] 422，code=DIVISION_BY_ZERO，且 **position 键不存在**
+### 8.25 除零：1/0
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1/0"}
+
+
+# 预期 [领域层钉] 422 DIVISION_BY_ZERO（HTTP 层未钉）
+### 8.26 模零：1%0
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1%0"}
+
+
+# 预期 [待观察] 422 DIVISION_BY_ZERO（0/0 属同一分支，但无断言）
+### 8.27 零除零：0/0
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "0/0"}
+
+
+# ---- 8.28–8.31 非有限结果（422 NON_FINITE_RESULT）----
+
+# 预期 [钉住] 422，含 NON_FINITE_RESULT
+### 8.28 负指数溢出：0^-1
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "0^-1"}
+
+
+# 预期 [待观察] **两个错误码都可能**：领域层断言写的是 isIn(NON_FINITE_RESULT, DOMAIN_ERROR)，
+#   两个取值都能让测试通过。请记录实际得到哪一个 —— 这是收紧断言的依据。
+### 8.29 巨型幂：9^9^9  ← 错误码未被钉死
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "9^9^9"}
+
+
+# 预期 [领域层钉] 422 NON_FINITE_RESULT
+### 8.30 阶乘上界：171!  （170 是上界，171 被拒）
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "171!"}
+
+
+# 预期 [领域层钉] 422 NON_FINITE_RESULT
+### 8.31 小数幂溢出：1.5^50001
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1.5^50001"}
+
+
+# ----------------------------------------------------------------------------
+# 9. 畸形的请求体
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 400，code=INVALID_REQUEST
+### 9.1 非法 JSON
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{not json
+
+
+# 预期 [钉住] 400，code=INVALID_REQUEST（缺 expression）
+### 9.2 空对象
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{}
+
+
+# 预期 [代码路径] 400，code=INVALID_REQUEST，消息「expression 不能为空」
+#   （ExpressionText 的紧凑构造器拒收 null；无测试断言）
+### 9.3 expression 为 null
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": null}
+
+
+# 预期 [代码路径] 400 INVALID_REQUEST，消息「expression 不能为空白」
+### 9.4 空串
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": ""}
+
+
+# 预期 [代码路径] 400 INVALID_REQUEST，消息「expression 不能为空白」（首尾空白会被 trim）
+### 9.5 纯空白
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "   "}
+
+
+# 预期 [待观察] 400 INVALID_REQUEST（字段类型不符 → 反序列化失败；无断言）
+### 9.6 expression 是数字而非字符串
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": 123}
+
+
+# 预期 [钉住] 400，code=INVALID_REQUEST，消息「变量 x 的值不能为 null」
+### 9.7 变量值为 null
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "x*2", "variables": {"x": null}}
+
+
+# 预期 [钉住] **500 INTERNAL_ERROR，消息「服务内部错误」** —— 这不是笔误，是本期的有意取舍：
+#   非 JSON 的 Content-Type 会让消息转换失败，而项目的错误码表里没有 415，
+#   于是走到兜底分支。**不要把它当 bug 修**（CalculatorControllerTest 里逐字记录了这条理由）。
+### 9.8 非 JSON 的 Content-Type  ← 预期 500，属有意设计
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: text/plain
+
+{"expression": "1+2"}
+
+
+# ----------------------------------------------------------------------------
+# 10. 404 / 405
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 404，含 NO_HANDLER（走的是 NoHandlerFoundException → 统一错误结构）
+### 10.1 未知路径
+GET {{base}}/api/v1/nope
+
+
+# 预期 [钉住，但仅 MockMvc] 405，code=METHOD_NOT_ALLOWED
+#   注意：405 只有 standalone MockMvc 的证据，**真实 HTTP 栈上没有 405 用例**。
+#   若这里实测不是 405，那就是一个真实覆盖缺口，值得记下来。
+### 10.2 方法不符：GET 打求值端点
+GET {{base}}/api/v1/calculator/calculate
+
+
+# 预期 [待观察] 404 NO_HANDLER（同 10.1 的机制；无断言）
+### 10.3 POST 打未知路径
+POST {{base}}/api/v1/nope
+Content-Type: application/json
+
+{}
+
+
+# 预期 [钉住] 200，响应体是能力清单 JSON —— spec §14 第 6 条要求的这个接口**本期已交付**
+#   （docs/mvp-and-roadmap.md 第一节：该接口已在本期拉回并交付，不是顺延项）。
+#   对照 spec 逐条验收时，这一条现在是**达成**，不是缺口。
+#   真实 HTTP 栈的断言见 CapabilityEndToEndTest.manifestIsServedOverRealHttp（200 + 清单内容）；
+#   清单字段由 CapabilityControllerTest.returnsTheFullCapabilityManifest 钉住。
+### 10.4 能力清单接口（本期已交付，据此对照 spec §14 第 6 条）
+GET {{base}}/api/v1/calculator/functions
+
+
+# ----------------------------------------------------------------------------
+# 11. 表达式长度上限（calculator.max-expression-length = 1000；判据是 length > limit）
+# ----------------------------------------------------------------------------
+
+# 预期 [钉住] 400，code=INVALID_REQUEST（本条表达式**恰好 1001 字符**，超限 1 个字符）
+### 11.1 长度 1001：超限被拒
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1"}
+
+
+# 预期 [待观察] 200，"result":500 —— **恰好 1000 字符应当被接受**（判据是严格大于），
+#   但没有任何测试钉住边界这一侧。若这里被拒，说明边界写成了 >=，是个真缺陷。
+### 11.2 长度 1000：边界内应被接受
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1"}
+
+
+# ----------------------------------------------------------------------------
+# 12. 其它值得手工看一眼的边界
+# ----------------------------------------------------------------------------
+
+# 预期 [领域层钉] 200，"result":1（0 的阶乘定义为 1）
+### 12.1 0!
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "0!"}
+
+
+# 预期 [领域层钉] 200，"result":120
+### 12.2 5!
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "5!"}
+
+
+# 预期 [领域层钉] 422 NON_FINITE_RESULT（阶乘写成 1E+10! 这种形式）
+### 12.3 1E+10!
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "1E+10!"}
+
+
+# 预期 [待观察] 200 —— 表达式两端空白会被 trim，结果应与 6.3 一致
+### 12.4 首尾空白
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "  1+2  "}
+
+
+# 预期 [待观察] 200 或 400 —— 我**没有核到**任何关于隐式乘法的规定或断言：spec、测试、
+#   roadmap 里都没提。若有隐式乘法会算出约 6.283；若没有则是解析错误。以实测为准。
+### 12.5 隐式乘法：2pi  （本实现无隐式乘法，预期解析错误）
+POST {{base}}/api/v1/calculator/calculate
+Content-Type: application/json
+
+{"expression": "2pi"}
+
+
+# ============================================================================
+# 实测记录（请手工执行后填写；这一段不进任何 AI 的结论）
+#
+#  4.3 2*50 的实际 result：____________
+#  4.4 sqrt(16) 的实际 result：____________
+#  7.2 遮蔽 pi 的实际结果（400 还是覆盖）：____________
+#  8.29 9^9^9 的实际 code：____________
+#  10.2 GET 求值端点的实际状态码：____________
+#  11.2 长度 1000 是否被接受：____________
+#  12.5 2pi 的实际结果：____________
+# ============================================================================
