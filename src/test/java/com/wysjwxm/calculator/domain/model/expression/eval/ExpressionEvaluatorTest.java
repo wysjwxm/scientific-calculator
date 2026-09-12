@@ -8,6 +8,7 @@ import com.wysjwxm.calculator.domain.model.expression.ExpressionText;
 import com.wysjwxm.calculator.domain.model.expression.parse.ExpressionParser;
 import com.wysjwxm.calculator.domain.model.function.FunctionRegistry;
 import com.wysjwxm.calculator.domain.model.number.CalcNumber;
+import com.wysjwxm.calculator.domain.model.number.DecimalNumber;
 import com.wysjwxm.calculator.domain.model.number.Numbers;
 import org.junit.jupiter.api.Test;
 
@@ -98,6 +99,13 @@ class ExpressionEvaluatorTest {
     void resolvesBuiltInConstants() {
         assertThat(num("pi")).isCloseTo(Math.PI, org.assertj.core.data.Offset.offset(1e-15));
         assertThat(num("e")).isCloseTo(Math.E, org.assertj.core.data.Offset.offset(1e-15));
+    }
+
+    @Test
+    void builtinConstantOutranksUserVariable() {
+        // 常量优先级高于变量：即使调用方传了 pi，表达式里的 pi 仍是内建常量
+        assertThat(eval("pi", Map.of("pi", new DecimalNumber(BigDecimal.ONE))).toDouble())
+                .isEqualTo(Math.PI);
     }
 
     @Test

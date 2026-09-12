@@ -3,6 +3,7 @@ package com.wysjwxm.calculator.application;
 import com.wysjwxm.calculator.domain.AngleUnit;
 import com.wysjwxm.calculator.domain.error.CalcErrorCode;
 import com.wysjwxm.calculator.domain.error.CalcException;
+import com.wysjwxm.calculator.domain.model.function.ReservedNames;
 import com.wysjwxm.calculator.domain.model.number.CalcNumber;
 
 import java.util.Map;
@@ -11,8 +12,13 @@ import java.util.Map;
  * 求值用例的入参。由接口层（防腐层）从 JSON 翻译而来。
  *
  * <p>注意 {@code variables} 的键仍是原始字符串 —— 本期的变量只作为**请求级
- * 临时量**进入求值上下文，没有变量存储，因此不存在第二个入口，也暂不做命名校验
- * （详见 docs/mvp-and-roadmap.md 的已知取舍）。
+ * 临时量**进入求值上下文，没有变量存储，因此不存在第二个入口。键受**禁用集合**
+ * （函数名 ∪ 保留常量名，spec §6.4）约束：落在集合内（如 {@code {"pi": 3}}）返回
+ * 400 {@code INVALID_REQUEST}，与 spec :367 一致。
+ *
+ * <p>按 D13，Phase 2 补上 {@code VariableName} 值对象后，这个命名校验应迁移到该值
+ * 对象的构造器里。当前放在这里是权宜：MVP 只有请求级这一个变量入口，还不需要
+ * 一个专门的名字类型（详见 docs/mvp-and-roadmap.md 的已知取舍）。
  *
  * @param angleUnit null 表示未指定，取策略缺省值
  * @param variables 求值期可见的请求级变量；null 与空 Map 都视为「无变量」
@@ -31,6 +37,10 @@ public record CalculationCommand(String expression, AngleUnit angleUnit,
                 if (entry.getKey() == null || entry.getValue() == null) {
                     throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
                             "变量名与变量值都不能为 null");
+                }
+                if (ReservedNames.standard().contains(entry.getKey())) {
+                    throw CalcException.of(CalcErrorCode.INVALID_REQUEST,
+                            "变量名 " + entry.getKey() + " 与函数名或保留常量同名");
                 }
             }
             variables = Map.copyOf(variables);

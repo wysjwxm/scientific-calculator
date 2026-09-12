@@ -71,12 +71,18 @@ public final class ExpressionEvaluator {
     }
 
     private CalcNumber resolveVariable(VariableExpr variable, EvaluationContext context) {
-        // 先查用户变量，未命中则查保留常量（spec §6.4）。因两个集合互斥，
-        // 这个顺序不影响结果，但保持与规范文字一致。
+        // 先查保留常量，未命中才查用户变量。常量优先是语言语义（spec §6.4「保留常量
+        // 只读，不可被用户变量覆盖」）—— 两个集合并不天然互斥：请求里传 {"pi": 3}
+        // 就能让它们相交，此时顺序直接决定结果，所以这里的顺序是承重的，不是风格。
+        //
+        // 这里**不依赖**上游是否已经拒收保留名：领域层自己定义语义，应用层在入口
+        // 拒收保留名是另一道把关（规范选的是 400 拒收而非静默忽略），两者互不替代 ——
+        // 直接调用求值器（如测试、Phase 2 的新入口）也应当得到「常量优先」。
+        //
         // 按字符串查表、不构造名字值对象：表达式里的标识符是任意词法单元，
         // 像 "sin(sin)" 的内层 sin 只应报「未定义」，不应报「名字非法」。
-        return context.lookup(variable.name())
-                .or(() -> MathematicalConstant.lookup(variable.name()))
+        return MathematicalConstant.lookup(variable.name())
+                .or(() -> context.lookup(variable.name()))
                 .orElseThrow(() -> CalcException.of(CalcErrorCode.UNKNOWN_VARIABLE,
                         "未定义的变量或常量: " + variable.name()));
     }

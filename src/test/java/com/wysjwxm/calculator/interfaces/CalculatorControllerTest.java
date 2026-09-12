@@ -221,6 +221,13 @@ class CalculatorControllerTest {
     }
 
     @Test
+    void rejectsVariableWhoseNameIsReserved() throws Exception {
+        calculate("{\"expression\":\"sin(pi)\",\"variables\":{\"pi\":3}}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
     void unsupportedContentTypeFallsBackToUnified500() throws Exception {
         // 出厂配置下就能走到的兜底路径：Content-Type 不是 application/json 时，
         // 消息转换器在进入 handler 之前就抛 HttpMediaTypeNotSupportedException，
