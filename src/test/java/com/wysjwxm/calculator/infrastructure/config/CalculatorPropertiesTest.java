@@ -34,13 +34,23 @@ class CalculatorPropertiesTest {
     @Test
     void rejectsNonPositiveExpressionLength() {
         runner.withPropertyValues("calculator.max-expression-length=0")
-              .run(ctx -> assertThat(ctx).hasFailed());
+              .run(ctx -> {
+                  assertThat(ctx).hasFailed();
+                  assertThat(ctx.getStartupFailure())
+                          .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                          .hasStackTraceContaining("calculator.max-expression-length 必须为正数");
+              });
     }
 
     @Test
     void rejectsNonPositiveDivisionPrecision() {
         runner.withPropertyValues("calculator.division-precision=-1")
-              .run(ctx -> assertThat(ctx).hasFailed());
+              .run(ctx -> {
+                  assertThat(ctx).hasFailed();
+                  assertThat(ctx.getStartupFailure())
+                          .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                          .hasStackTraceContaining("calculator.division-precision 必须为正数");
+              });
     }
 
     @Test
@@ -55,6 +65,15 @@ class CalculatorPropertiesTest {
               .run(ctx -> {
                   CalculatorProperties props = ctx.getBean(CalculatorProperties.class);
                   assertThat(props.historyUnbounded()).isTrue();
+              });
+    }
+
+    @Test
+    void positiveHistoryCapacityIsBounded() {
+        runner.withPropertyValues("calculator.history-capacity=50")
+              .run(ctx -> {
+                  CalculatorProperties props = ctx.getBean(CalculatorProperties.class);
+                  assertThat(props.historyUnbounded()).isFalse();
               });
     }
 }

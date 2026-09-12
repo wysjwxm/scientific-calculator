@@ -12,9 +12,14 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * infrastructure。
  *
  * <p>各分量带 {@code @DefaultValue}，与 application.yaml 中的取值保持一致，使配置项
- * 缺省时仍能正常绑定；显式配置的值（含非法值）优先于默认值。
+ * 缺省时仍能正常绑定。非空的显式配置值（含非法值）优先于默认值：非法值照样在构造器里
+ * 被拒绝；而空值（如 {@code calculator.default-angle-unit:} 后面不写内容）对绑定器
+ * 等同于「未配置」，会落到默认值，这一点不如「非法值」严格。
  *
  * <p>取值范围在紧凑构造器中校验：配置非法时 bean 创建即失败，应用启动期快速失败。
+ * 其中 defaultAngleUnit 的 null 检查只对直接构造生效 —— 走绑定时，缺省值来自
+ * {@code @DefaultValue}、非法值在类型转换阶段就已失败，构造器拿不到 null；保留它是为了
+ * 让公开构造器自身安全，不依赖调用方。
  * 不使用 jakarta.validation 注解 —— spring-boot-starter-web 并不传递引入校验实现，
  * 注解会静默失效，反而不如直接抛异常可靠。
  */
