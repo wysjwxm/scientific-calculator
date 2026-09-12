@@ -53,7 +53,7 @@ class CapabilityQueryTest {
     }
 
     @Test
-    void everyDescriptionInTheManifestIsNonBlankAndDistinct() {
+    void everyDomainEnumDescriptionIsNonBlankAndDistinct() {
         List<String> all = new java.util.ArrayList<>();
         for (UnaryFunction f : UnaryFunction.values()) {
             all.add(f.description());
@@ -66,6 +66,33 @@ class CapabilityQueryTest {
         }
         assertThat(all).allSatisfy(d -> assertThat(d).isNotBlank());
         assertThat(all).doesNotHaveDuplicates();
+    }
+
+    /**
+     * 清单里的说明与定义域必须逐位来自源头枚举 —— 这是 spec §12 D8 的防漂移规则：
+     * 清单由源头生成而非手写，否则清单会与语言行为各说各话。
+     *
+     * <p>与「非空 + 不重复」互补：那条管枚举侧文本本身，这条管**清单有没有如实转述**。
+     * 少了它，在 CapabilityQuery 里对某个未被线上钉子钉住的函数写死说明是不会变红的。
+     */
+    @Test
+    void manifestDescriptionsAndDomainsComeFromTheDomainEnums() {
+        CapabilityManifest m = describe();
+        assertThat(m.unaryFunctions()).extracting(FunctionDescription::description)
+                .containsExactlyElementsOf(java.util.Arrays.stream(UnaryFunction.values())
+                        .map(UnaryFunction::description).toList());
+        assertThat(m.unaryFunctions()).extracting(FunctionDescription::domain)
+                .containsExactlyElementsOf(java.util.Arrays.stream(UnaryFunction.values())
+                        .map(f -> f.domain().description()).toList());
+        assertThat(m.binaryFunctions()).extracting(FunctionDescription::description)
+                .containsExactlyElementsOf(java.util.Arrays.stream(BinaryFunction.values())
+                        .map(BinaryFunction::description).toList());
+        assertThat(m.binaryFunctions()).extracting(FunctionDescription::domain)
+                .containsExactlyElementsOf(java.util.Arrays.stream(BinaryFunction.values())
+                        .map(BinaryFunction::domainDescription).toList());
+        assertThat(m.constants()).extracting(ConstantDescription::description)
+                .containsExactlyElementsOf(java.util.Arrays.stream(MathematicalConstant.values())
+                        .map(MathematicalConstant::description).toList());
     }
 
     @Test
