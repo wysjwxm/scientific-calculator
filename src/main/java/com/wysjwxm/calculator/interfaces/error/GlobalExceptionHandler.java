@@ -56,7 +56,12 @@ public class GlobalExceptionHandler {
         return build(CalcErrorCode.INVALID_REQUEST, "请求体不是合法的 JSON 或字段类型不匹配", null, request);
     }
 
-    /** 路径变量或查询参数类型不符，例如 /history/abc。 */
+    /** 路径变量或查询参数类型不符，例如 /history/abc。
+     *
+     * <p>本期不可达：MVP 只有 {@code POST /calculate} 与 {@code GET /health}，
+     * 都不绑定路径变量或查询参数。保留而非删除是刻意的 —— 它是 spec §7.6 错误码表里
+     * 「类型不符」那一行的实现，Phase 2 加入带路径变量的端点后即生效；
+     * 错误码词汇表同样刻意保持完整（见 docs/mvp-and-roadmap.md §五）。 */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex,
                                                             HttpServletRequest request) {
@@ -64,7 +69,11 @@ public class GlobalExceptionHandler {
                 "参数 " + ex.getName() + " 的取值不合法: " + ex.getValue(), null, request);
     }
 
-    /** 兜底。日志留全栈，但不把堆栈外泄给调用方。 */
+    /** 兜底。日志留全栈，但不把堆栈外泄给调用方。
+     *
+     * <p>它不是死分支：出厂配置下，{@code Content-Type} 非 JSON 的请求会在此之前抛出
+     * {@code HttpMediaTypeNotSupportedException}，本类无该分支，于是落到这里返回 500。
+     * （另：把接口层的参数守卫去掉这类缺陷，也会从求值路径落到这里。） */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
         log.error("未预期的异常, path={}", request.getRequestURI(), ex);

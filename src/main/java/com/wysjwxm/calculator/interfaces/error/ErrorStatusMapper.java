@@ -7,7 +7,9 @@ import org.springframework.http.HttpStatus;
  * 错误码 → HTTP 状态的唯一映射点。
  *
  * <p>领域层的 {@link CalcErrorCode} 刻意不携带 HTTP 状态，以保持对传输协议无感知；
- * 映射集中在这里，由 ErrorStatusMapperTest 保证不漏。
+ * 映射集中在这里。第一道网是编译期：下面这个 switch 没有 {@code default}，漏掉某个错误码
+ * 会直接编译失败（新增错误码却忘了给状态，压根跑不到测试）。ErrorStatusMapperTest 是第二道网，
+ * 它断言的是各错误码的具体取值，而不是「有没有映射」。
  */
 public final class ErrorStatusMapper {
 

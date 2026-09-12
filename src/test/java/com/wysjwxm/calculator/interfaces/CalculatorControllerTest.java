@@ -32,10 +32,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>本期是 MVP：没有变量存储与历史，故没有 PUT 变量、历史、/functions 清单的用例。
  *
- * <p><b>本类的 ObjectMapper 与生产栈不一致</b>：{@code standaloneSetup} 用的是 Spring Test
- * 自带的、未注册 {@code JavaTimeModule} 的 ObjectMapper，因此 {@code timestamp} 会被序列化成
- * 一个十进制小数；真实栈（见 {@code CalculatorEndToEndTest}）走 Boot 自动配置的 ObjectMapper，
- * 输出 ISO-8601 字符串。**本类不要断言 {@code timestamp} 的形态** —— 目前也没有一条断言碰它。
+ * <p><b>本类的 ObjectMapper 与生产栈不一致</b>：{@code standaloneSetup} 用的 mapper 与 Boot
+ * 自动配置的 ObjectMapper **都注册了 {@code jackson-datatype-jsr310}**（{@code getRegisteredModuleIds()}
+ * 实测两边都有），差别不在模块，在
+ * {@code SerializationFeature.WRITE_DATES_AS_TIMESTAMPS} —— 前者为 {@code true}
+ * （{@code Instant} 被写成一个十进制小数，实测 {@code 1789208624.860137000}），后者被 Boot 关掉了
+ * （写成 ISO-8601 字符串，实测 {@code 2026-09-12T10:23:44.860137Z}）。所以同一个 {@code timestamp}
+ * 字段在两个测试基座下的形态不同。**本类不要断言 {@code timestamp} 的形态** —— 目前也没有一条断言碰它。
  * 要断言就写到真实栈那个测试类里去。
  */
 class CalculatorControllerTest {
@@ -214,5 +217,22 @@ class CalculatorControllerTest {
         calculate("{\"expression\":\"x*2\",\"variables\":{\"x\":null}}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    void unsupportedContentTypeFallsBackToUnified500() throws Exception {
+        // 出厂配置下就能走到的兜底路径：Content-Type 不是 application/json 时，
+        // 消息转换器在进入 handler 之前就抛 HttpMediaTypeNotSupportedException，
+        // 而 GlobalExceptionHandler 没有它的分支，于是落到兜底 → 500 INTERNAL_ERROR。
+        // 注意这不是「死分支」：不需要引入任何缺陷就能到达。
+        // 状态码 500 而非 415 是本期的已知取舍 —— spec §7.6 的错误码表里没有 415，
+        // 而 ErrorStatusMapper 是穷尽 switch、INVALID_REQUEST 固定映 400，
+        // 想要 415 就得新增错误码（擅扩契约）。统一响应体这一条是满足的。
+        mockMvc.perform(post("/api/v1/calculator/calculate")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("{\"expression\":\"1+2\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.message").value("服务内部错误"));
     }
 }

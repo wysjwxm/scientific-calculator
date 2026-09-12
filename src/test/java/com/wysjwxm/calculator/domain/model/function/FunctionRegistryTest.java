@@ -186,7 +186,7 @@ class FunctionRegistryTest {
     @Test
     void asinhRejectsInputsBeyondItsDeclaredMagnitudeBound() {
         // 实现里 x * x 会先溢出成 Infinity，所以上界是**有意公开**的行为而非公式错
-        // （spec §5.3.3：拒收优于伪装）。超出上界即拒收，且错误码是 NON_FINITE_RESULT。
+        // （spec §5.3.3 第 3 条：拒收优于崩溃）。超出上界即拒收，且错误码是 NON_FINITE_RESULT。
         assertThatThrownBy(() -> apply("asinh", AngleUnit.RADIAN, 1e155))
                 .isInstanceOf(CalcException.class)
                 .extracting(e -> ((CalcException) e).code())
