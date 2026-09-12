@@ -155,17 +155,25 @@ com.wysjwxm.calculator
 | `ExpressionParser` | domain | Token 流 → `Expression`（**优先级爬升**式递归下降，由 `OperatorTable` 驱动） | Lexer 产物、`OperatorTable` |
 | `OperatorTable` | domain | 算子优先级与结合性的**唯一事实来源**。解析器与 `/functions` 清单均由此生成 | 无 |
 | `ExpressionEvaluator` | domain | `Expression` → `CalcNumber`，配合 `EvaluationContext` 解析变量 | AST、注册表 |
-| `ExpressionText` | domain | 表达式原文的值对象，构造即校验非空白与长度上限 | 长度上限以 `int` 参数传入（**不依赖 `CalculationPolicy`——那是应用层类型，依赖方向不允许**） |
+| `ExpressionText` | domain | 表达式原文的值对象，构造即校验非空、非空白，并去除首尾空白 | 无 |
 | `FunctionRegistry` | domain | 函数名 → 函数实现的查表 | `MathFunction` 实现 |
 | `ReservedNames` | domain | 保留名集合（函数名 ∪ 常量名）的值对象，`standard()` 静态可求 | `UnaryFunction`、`BinaryFunction`、`MathematicalConstant` |
 | `VariableName` | domain | **值对象，构造即校验**格式 / 长度 / 非保留名 —— 三项全在构造器内，无旁路 | `ReservedNames` |
 | `VariableSet` | domain | **聚合根接口**：变量的增删查改（身份 = `VariableName`） | `VariableName`、`Variable` |
 | `CalculationHistory` | domain | **聚合根接口**：追加（含容量淘汰）、按 id 查、分页、清空 | `Calculation`、`PageResult` |
-| `CalculationUseCase` | application | 编排：`ExpressionText` → 解析 → 求值 → 落历史；角度单位缺省；请求级变量名翻译为 `VariableName` | domain |
+| `CalculationUseCase` | application | 编排：`ExpressionText` → 解析 → 求值 → 落历史；角度单位缺省；变量名翻译为 `VariableName`；**表达式长度上限（策略）的强制点** | domain |
 | `VariableUseCase` | application | 编排变量读写；原始名翻译为 `VariableName` | domain |
 | `HistoryUseCase` | application | 历史分页参数校验与查询 | domain |
 | `InMemoryVariableSet` | infrastructure | `ConcurrentHashMap` 实现 | `VariableSet` |
 | `InMemoryCalculationHistory` | infrastructure | `ArrayDeque` + 读写锁实现 | `CalculationHistory` |
+
+### 4.3 三条实现约束（语言、并发与策略归属，非架构取舍）
+
+**一、`MathFunction` 的取名方法不能叫 `name()`。** 函数实现是枚举（`UnaryFunction`、`BinaryFunction`），而 `java.lang.Enum.name()` 是 `final` 的——枚举里声明 `public String name()` 会**编译失败**（无法覆写 final 方法），且即便绕过，`Enum.name()` 返回的也是常量标识符（`LOG10`）而非函数名（`log10`）。因此接口方法定名为 **`functionName()`**。这是 Java 语言约束，不是命名偏好。
+
+**二、`ExpressionParser` 必须是无状态的**，或者把可变状态封在每次调用的局部对象里。解析过程需要游标（`tokens` + `index`）——若把它们做成解析器的实例字段，则该实例**不可被并发复用**。Spring 的单例 Bean 会被多线程共享，因此解析器设计为：`parse()` 内部创建一个局部的解析运行对象承载游标，`ExpressionParser` 自身无可变状态，可安全注册为单例。这一点在早期草稿中曾写错（把游标做成实例字段），此处记录以防回退。
+
+**三、表达式长度上限是策略，不是值对象的不变量。** 没有任何表达式因为"超过 1000 字符"而在语言层面变得无意义——该限制是资源保护，且它来自可配置项 `calculator.max-expression-length`。把它塞进 `ExpressionText` 的构造器会让一个语言值对象依赖运行时配置，是坏味道。因此 `ExpressionText` 只校验语言层面的不变量（非空、非空白、去首尾空白），**长度上限由 `CalculationUseCase` 依据 `CalculationPolicy` 强制**。
 
 ## 5. 数值模型
 
