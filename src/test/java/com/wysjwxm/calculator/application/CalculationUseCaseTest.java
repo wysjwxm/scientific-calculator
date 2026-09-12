@@ -97,9 +97,12 @@ class CalculationUseCaseTest {
                 new CalculationCommand("sin(30)", AngleUnit.RADIAN, Map.of()));
         // 期望值用冻结字面量而不是 Math.sin(30)：后者就是 SIN 的实现本身，期望值与
         // 实现同源的话，实现变了期望值跟着变，两边一起错就没人发现。
-        // 30 弧度 ≈ -0.9880316240928618（DEGREE 与 RADIAN 在此给出完全不同的数）。
+        // 这个数是**规整后**的值：Numbers.floating() 把算出来的 double 规整到 15 位有效
+        // 数字，30 弧度的原始 Math.sin ≈ -0.9880316240928617 经规整即此值。写的就是系统
+        // 对外产出的那个数，不是未经规整的原始近似值。
+        // （30 弧度 ≈ -0.988031624092862；DEGREE 与 RADIAN 在此给出完全不同的数。）
         assertThat(record.result().toDouble())
-                .isCloseTo(-0.9880316240928618, org.assertj.core.data.Offset.offset(1e-12));
+                .isCloseTo(-0.988031624092862, org.assertj.core.data.Offset.offset(1e-12));
         assertThat(record.angleUnit()).isEqualTo(AngleUnit.RADIAN);
     }
 
