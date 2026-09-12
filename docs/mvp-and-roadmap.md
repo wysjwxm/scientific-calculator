@@ -37,7 +37,8 @@
 - **对 MVP 的影响**：表达式里出现标识符时，只认函数名与常量名，不认变量；查不到即报错（错误码 `UNKNOWN_VARIABLE` / `VARIABLE_NOT_FOUND` 已在错误码词汇表里预留，MVP 不会用到）。
 
 ### 2. 计算历史
-- **不做**：`Calculation` / `CalculationHistory` 聚合根、环形缓冲与容量淘汰、分页查询、清空历史、历史接口。
+- **不做**：`CalculationHistory` 聚合根、环形缓冲与容量淘汰、分页查询、清空历史、历史接口。
+- **保留**：`Calculation` 结果记录本身 —— 它是**求值路径的产出**（`CalculationUseCase.calculate` 的返回类型、`CalculateResponse.from` 的入参），不是历史路径的一部分。但字段裁到三个：`(ExpressionText expression, CalcNumber result, AngleUnit angleUnit)`；原设计的 `id` / `elapsedMs` / `createdAt` 一并去掉，因为 MVP 里没有消费者，而 `id` 本应由历史聚合根分配 —— 在没有历史的情况下没有任何正确值可填。Phase 2 建聚合根时加回这三个字段。
 - **理由**：历史是「求值」之后的记录能力，不影响单次计算是否正确。它引入容量策略、并发与分页这些与计算无关的复杂度。
 - **Phase 2 需要补**：聚合根（内存 `ArrayDeque` + 读写锁 + FIFO 淘汰）、`HistoryUseCase`、分页响应 DTO、历史控制器。
 - **对 MVP 的影响**：每次求值不落库、不留痕；spec §14 验收里依赖历史记录条数的那几条，顺延为 Phase 2 验收（见第四节）。
@@ -99,6 +100,6 @@
 | 无变量 | 表达式只能算常量表达式，不能存中间结果 | Phase 2 第一优先，因为它影响接口形态 |
 | 无历史 | 服务无状态、不可回溯 | Phase 2，与变量并列 |
 | 错误码词汇表比 MVP 实际用到的多 | 有几个码（`UNKNOWN_VARIABLE`、`VARIABLE_NOT_FOUND`、`HISTORY_NOT_FOUND`）在 MVP 中不会被触发 | Phase 2 补上对应能力后自然消化；词汇表保持完整是刻意的，避免 Phase 2 改动接口契约 |
-| 请求级变量保留，但**没有命名校验** | `POST /api/calculation` 仍接受请求体的 `variables` 映射（spec §7.1 的请求形态不变），但没有变量存储、也没有保留名校验 —— 请求里传 `{"sin": 1}` 这类与函数名/常量名冲突的键，会覆盖内建含义，而不是像完整设计那样被拒 | Phase 2 补变量能力时一并收紧（`VariableName` + `ReservedNames` 校验）；在此之前，这是「能用但不设防」的已知缺口 |
+| 请求级变量保留，但**没有命名校验** | `POST /api/calculation` 仍接受请求体的 `variables` 映射（spec §7.1 的请求形态不变），但没有变量存储、也没有保留名校验 —— 请求里传 `{"pi": 3}` 这类与常量名冲突的键，会覆盖内建含义，而不是像完整设计那样被拒。**已在代码中核实**：`ExpressionEvaluator` 的查找顺序是先 `context.lookup(name)`、查不到才找内建常量，所以 `sin(pi)` 在传了 `{"pi": 3}` 时确实算成 `sin(3)` | Phase 2 补变量能力时一并收紧（`VariableName` + `ReservedNames` 校验，D13 的单一收口点）；在此之前这是「能用但不设防」的已知缺口。注：MVP 里没有变量存储，也就没有第二个入口，spec 担心的「同一表达式在不同入口下含义不一致」在本期并不存在 —— 遮蔽只可能由调用方在同一请求里显式传入造成 |
 | 评审深度低于原计划 | 变量/历史两块的缺陷要到 Phase 2 才暴露 | Phase 2 动工前先补一次评审 |
 | 内存实现无持久化 | 重启即丢 | 若需求变成「多实例/持久化」，需要重新做架构决策（当前明确不引入存储） |
